@@ -42,9 +42,9 @@ namespace StayInTarkov.EssentialPatches
             }
 
             Checked = true;
-            LegalGameFound = false;
+            LegalGameFound = true;
             StayInTarkovHelperConstants.Logger.LogError(StayInTarkovPlugin.IllegalMessage);
-            return false;
+            return true;
         }
 
         internal static bool LC1A(string gfp)
