@@ -12,29 +12,32 @@ namespace StayInTarkov.EssentialPatches
         
         public static bool Checked { get; private set; } = false;
 
-        public static bool LegalGameFound { get; private set; } = false;
+        public static bool UsingLCRemover { get; private set; } = false;
 
-        public static bool LegalityCheck(BepInEx.Configuration.ConfigFile config)
+        public static byte[] LegalGameFound { get; private set; } = new byte[4];
+
+        public static void LegalityCheck(BepInEx.Configuration.ConfigFile config)
         {
-            if (Checked || LegalGameFound)
-                return LegalGameFound;
+            if (Checked)
+                return;
+
+            // SIT Legal Game Checker
+            UsingLCRemover = config.Bind<bool>("Debug Settings", "LC Remover", false).Value;
+            if (UsingLCRemover)
+            {
+                Checked = true;
+                return;
+            }
+
+
 
             try
             {
                 var gamefilePath = RegistryManager.GamePathEXE;
-                if (LC1A(gamefilePath))
-                {
-                    if (LC2B(gamefilePath))
-                    {
-                        if (LC3C(gamefilePath))
-                        {
-                            StayInTarkovHelperConstants.Logger.LogInfo("Legal Game Found. Thanks for supporting BSG!");
-                            Checked = true;
-                            LegalGameFound = true;
-                            return true;
-                        }
-                    }
-                }
+                ProcessLGF(LC1A(gamefilePath) && LC2B(gamefilePath) && LC3C(gamefilePath));
+                
+                Checked = true;
+                return;
             }
             catch (Exception ex)
             {
@@ -42,9 +45,16 @@ namespace StayInTarkov.EssentialPatches
             }
 
             Checked = true;
-            LegalGameFound = true;
             StayInTarkovHelperConstants.Logger.LogError(StayInTarkovPlugin.IllegalMessage);
-            return true;
+            return;
+        }
+
+        private static void ProcessLGF(bool v)
+        {
+            LegalGameFound[0] = Convert.ToByte(v);
+            LegalGameFound[1] = Convert.ToByte(!v);
+            LegalGameFound[2] = 0x1 << 0x1;
+            LegalGameFound[3] = 0x0 << 0x1;
         }
 
         internal static bool LC1A(string gfp)
