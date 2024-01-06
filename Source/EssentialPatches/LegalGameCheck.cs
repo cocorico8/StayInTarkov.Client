@@ -12,13 +12,22 @@ namespace StayInTarkov.EssentialPatches
         
         public static bool Checked { get; private set; } = false;
 
+        public static bool UsingLCRemover { get; private set; } = true;
+
         public static byte[] LegalGameFound { get; private set; } = new byte[4];
 
         public static void LegalityCheck(BepInEx.Configuration.ConfigFile config)
         {
             if (Checked)
                 return;
-
+            
+            // SIT Legal Game Checker
+            UsingLCRemover = config.Bind<bool>("Debug Settings", "LC Remover", false).Value;
+            if (UsingLCRemover)
+            {
+                Checked = true;
+                return;
+            }
             try
             {
                 var gamefilePath = RegistryManager.GamePathEXE;
