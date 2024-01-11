@@ -1,4 +1,5 @@
-﻿using StayInTarkov.Coop.NetworkPacket;
+﻿using StayInTarkov.Coop.Components.CoopGameComponents;
+using StayInTarkov.Coop.NetworkPacket;
 using StayInTarkov.Core.Player;
 using StayInTarkov.Networking;
 using System;
@@ -95,7 +96,7 @@ namespace StayInTarkov.Coop.Player.FirearmControllerPatches
             triggerPressedPacket.rX = player.Rotation.x;
             triggerPressedPacket.rY = player.Rotation.y;
             var serialized = triggerPressedPacket.Serialize();
-            AkiBackendCommunication.Instance.SendDataToPool(serialized);
+            GameClient.SendDataToServer(serialized);
         }
 
 

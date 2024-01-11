@@ -131,8 +131,8 @@ namespace StayInTarkov.Configuration
                 ("Coop", "ShowDronesOnServer", false, new ConfigDescription("Whether to spawn the client drones on the server -- for debugging")).Value;
 
                 SETTING_PlayerStateTickRateInMS = StayInTarkovPlugin.Instance.Config.Bind
-                  ("Coop", "PlayerStateTickRateInMS", 333, new ConfigDescription("The rate at which Player States will be synchronized. Min: 150ms, Max 2s")).Value;
-                SETTING_PlayerStateTickRateInMS = Math.Min(2 * 1000, Math.Max(150, SETTING_PlayerStateTickRateInMS));
+                  ("Coop", "PlayerStateTickRateInMS", 333, new ConfigDescription("TCP Only: The rate at which Player States will attempt to be synchronized. Min: 150ms, Max 666ms")).Value;
+                SETTING_PlayerStateTickRateInMS = Math.Min(666, Math.Max(150, SETTING_PlayerStateTickRateInMS));
 
                 SETTING_HeadshotsAlwaysKill = StayInTarkovPlugin.Instance.Config.Bind
                   ("Coop", "HeadshotsAlwaysKill", false, new ConfigDescription("Enable to make headshots actually work, no more tanking definite kills!")).Value;
@@ -166,7 +166,7 @@ namespace StayInTarkov.Configuration
                 Logger.LogDebug($"ArenaMode: {ArenaMode}");
                 Logger.LogDebug($"ForceHighPingMode: {ForceHighPingMode}");
 
-                SITHostProtocol = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITHostProtocol", HostProtocol.TCP, new ConfigDescription("SIT Host Protocol. TCP only, UDP only, Both. Options: TCP,UDP,Both")).Value;
+                SITHostProtocol = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITHostProtocol", HostProtocol.TCP, new ConfigDescription("SIT Host Protocol.")).Value;
                 SITWebSocketPort = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITPort", 6970, new ConfigDescription("SIT TCP/Websocket Port DEFAULT = 6970")).Value;
                 SITUDPPort = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITUDPPort", 6971, new ConfigDescription("SIT UDP Port DEFAULT = 6971")).Value;
                 SITUDPHostIPV4 = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITUDPHostIPV4", "127.0.0.1", new ConfigDescription("The IPv4 to use when hosting a UDP Coop Session")).Value;
@@ -186,7 +186,7 @@ namespace StayInTarkov.Configuration
             {
                 TCP,
                 UDP, 
-                Both
+                //Both
             }
         }
 

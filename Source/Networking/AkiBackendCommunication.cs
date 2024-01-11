@@ -5,6 +5,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using StayInTarkov.Configuration;
 using StayInTarkov.Coop;
+using StayInTarkov.Coop.Components.CoopGameComponents;
 using StayInTarkov.Coop.Matchmaker;
 using StayInTarkov.Coop.NetworkPacket;
 using StayInTarkov.ThirdParty;
@@ -78,7 +79,7 @@ namespace StayInTarkov.Networking
 
         protected ManualLogSource Logger;
 
-        WebSocketSharp.WebSocket WebSocket { get; set; }
+        public WebSocketSharp.WebSocket WebSocket { get; private set; }
 
         public static int PING_LIMIT_HIGH { get; } = 125;
         public static int PING_LIMIT_MID { get; } = 100;
@@ -186,6 +187,12 @@ namespace StayInTarkov.Networking
                 if (WebSocket != null)
                     WebSocket.Send(packet);
             });
+        }
+
+        public void PostDownWebSocketImmediately(byte[] packet)
+        {
+            if (WebSocket != null)
+                WebSocket.SendAsync(packet, (b) => { });
         }
 
         private void WebSocket_OnError(object sender, WebSocketSharp.ErrorEventArgs e)

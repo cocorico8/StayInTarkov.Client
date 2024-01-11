@@ -13,8 +13,10 @@ using JsonType;
 using Newtonsoft.Json;
 using StayInTarkov.Configuration;
 using StayInTarkov.Coop.Components;
+using StayInTarkov.Coop.Components.CoopGameComponents;
 using StayInTarkov.Coop.FreeCamera;
 using StayInTarkov.Coop.Matchmaker;
+using StayInTarkov.Coop.Players;
 using StayInTarkov.Coop.Web;
 using StayInTarkov.Core.Player;
 using StayInTarkov.Networking;
@@ -94,8 +96,6 @@ namespace StayInTarkov.Coop
 
         private static ManualLogSource Logger;
 
-
-        // Token: 0x0600844F RID: 33871 RVA: 0x0025D580 File Offset: 0x0025B780
         internal static CoopGame Create(
             InputTree inputTree
             , Profile profile
@@ -164,21 +164,25 @@ namespace StayInTarkov.Coop
             // ---------------------------------------------------------------------------------
             // Create GameClient(s)
             // TODO: Switch to GameClientTCP/GameClientUDP
-            if (PluginConfigSettings.Instance.CoopSettings.SITHostProtocol == PluginConfigSettings.CoopConfigSettings.HostProtocol.Both
-               || PluginConfigSettings.Instance.CoopSettings.SITHostProtocol == PluginConfigSettings.CoopConfigSettings.HostProtocol.TCP
+            if (
+               // PluginConfigSettings.Instance.CoopSettings.SITHostProtocol == PluginConfigSettings.CoopConfigSettings.HostProtocol.Both
+               //|| 
+               PluginConfigSettings.Instance.CoopSettings.SITHostProtocol == PluginConfigSettings.CoopConfigSettings.HostProtocol.TCP
                )
             {
-                AkiBackendCommunication.Instance.WebSocketCreate(MatchmakerAcceptPatches.Profile);
+                coopGame.GameClient = coopGame.GetOrAddComponent<GameClientTCP>();
             }
 
             // Udp Instanciate
-            if (PluginConfigSettings.Instance.CoopSettings.SITHostProtocol == PluginConfigSettings.CoopConfigSettings.HostProtocol.Both
-                || PluginConfigSettings.Instance.CoopSettings.SITHostProtocol == PluginConfigSettings.CoopConfigSettings.HostProtocol.UDP
+            if (
+                //PluginConfigSettings.Instance.CoopSettings.SITHostProtocol == PluginConfigSettings.CoopConfigSettings.HostProtocol.Both
+                //|| 
+                PluginConfigSettings.Instance.CoopSettings.SITHostProtocol == PluginConfigSettings.CoopConfigSettings.HostProtocol.UDP
                 )
             {
                 if (MatchmakerAcceptPatches.IsClient)
                 {
-                    coopGame.Client = coopGame.GetOrAddComponent<GameClientUDP>();
+                    coopGame.GameClient = coopGame.GetOrAddComponent<GameClientUDP>();
                 }
                 else
                 {
@@ -188,8 +192,6 @@ namespace StayInTarkov.Coop
 
             return coopGame;
         }
-
-        //BossLocationSpawn[] bossSpawnAdjustments;
 
         public void CreateCoopGameComponent()
         {
@@ -256,7 +258,7 @@ namespace StayInTarkov.Coop
                     yield return waitSeconds;
 
                 // Send a message of nothing to keep the Socket Alive whilst loading
-                AkiBackendCommunication.Instance.PostDownWebSocketImmediately("");
+                AkiBackendCommunication.Instance.PostDownWebSocketImmediately("CLIENT_LOADING_KEEP_ALIVE");
 
                 yield return waitSeconds;
 
@@ -1080,20 +1082,33 @@ namespace StayInTarkov.Coop
         {
             UpdateExfiltrationUi(point, point.Entered.Any((EFT.Player x) => x.ProfileId == Profile_0.Id));
             Logger.LogDebug("ExfiltrationPoint_OnStatusChanged");
-            Logger.LogDebug(prevStatus);
-
             EExfiltrationStatus curStatus = point.Status;
+            Logger.LogDebug($"{nameof(prevStatus)}:{prevStatus}.{nameof(curStatus)}:{curStatus}");
 
             // Fixes player cannot extract with The Lab elevator and Armored Train
             if (prevStatus == EExfiltrationStatus.AwaitsManualActivation && curStatus == EExfiltrationStatus.Countdown)
                 point.ExternalSetStatus(EExfiltrationStatus.RegularMode);
+
+            // Fixes player cannot extract with Car on Ground Zero
+            if (prevStatus == EExfiltrationStatus.UncompleteRequirements && curStatus == EExfiltrationStatus.Countdown)
+            {
+                foreach (var player in point.Entered)
+                {
+                    if (!ExtractingPlayers.ContainsKey(player.ProfileId) && !ExtractedPlayers.Contains(player.ProfileId))
+                    {
+                        ExtractingPlayers.Add(player.ProfileId, (point.Settings.ExfiltrationTime, DateTime.Now.Ticks, point.Settings.Name));
+                        Logger.LogDebug($"Added {player.ProfileId} to {nameof(ExtractingPlayers)}");
+                    }
+                }
+                point.ExternalSetStatus(EExfiltrationStatus.RegularMode);
+            }
         }
 
         public ExitStatus MyExitStatus { get; set; } = ExitStatus.Survived;
         public string MyExitLocation { get; set; } = null;
         public ISpawnSystem SpawnSystem { get; set; }
         public int MaxBotCount { get; private set; }
-        public GameClientUDP Client { get; private set; }
+        public IGameClient GameClient { get; private set; }
         public GameServerUDP Server { get; private set; }
 
         private void HealthController_DiedEvent(EDamageType obj)
