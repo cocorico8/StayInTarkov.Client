@@ -109,7 +109,8 @@
     </Reference>
     <Reference Include="Unity.TextMeshPro">
       <HintPath>..\References\Unity.TextMeshPro.dll</HintPath>
-    </Reference>
+		<Private>False</Private>
+	</Reference>
     <Reference Include="UnityEngine">
       <HintPath>..\References\UnityEngine.dll</HintPath>
       <Private>False</Private>
@@ -144,6 +145,7 @@
   
   <ItemGroup>
     <Folder Include="Networking\Nat\" />
+    <Folder Include="Properties\" />
   </ItemGroup>
   
 </Project>

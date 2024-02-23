@@ -103,16 +103,16 @@ namespace StayInTarkov.Coop.SITGameModes
             InputTree inputTree
             , Profile profile
             , GameDateTime backendDateTime
-            , Insurance insurance
+            , InsuranceCompanyClass insurance
             , MenuUI menuUI
             , CommonUI commonUI
             , PreloaderUI preloaderUI
             , GameUI gameUI
-            , LocationSettings.Location location
+            , LocationSettingsClass.Location location
             , TimeAndWeatherSettings timeAndWeather
             , WavesSettings wavesSettings
             , EDateTime dateTime
-            , Callback<ExitStatus, TimeSpan, ClientMetrics> callback
+            , Callback<ExitStatus, TimeSpan, MetricsClass> callback
             , float fixedDeltaTime
             , EUpdateQueue updateQueue
             , ISession backEndSession
@@ -607,7 +607,8 @@ namespace StayInTarkov.Coop.SITGameModes
         /// <param name="statisticsManager"></param>
         /// <param name="questController"></param>
         /// <returns></returns>
-        public override async Task<LocalPlayer> vmethod_2(int playerId, Vector3 position, Quaternion rotation, string layerName, string prefix, EPointOfView pointOfView, Profile profile, bool aiControl, EUpdateQueue updateQueue, EFT.Player.EUpdateMode armsUpdateMode, EFT.Player.EUpdateMode bodyUpdateMode, CharacterControllerSpawner.Mode characterControllerMode, Func<float> getSensitivity, Func<float> getAimingSensitivity, IStatisticsManager statisticsManager, AbstractQuestController questController, AbstractAchievementsController achievementsController)
+        /// 
+        public override async Task<LocalPlayer> vmethod_2(int playerId, Vector3 position, Quaternion rotation, string layerName, string prefix, EPointOfView pointOfView, Profile profile, bool aiControl, EUpdateQueue updateQueue, EFT.Player.EUpdateMode armsUpdateMode, EFT.Player.EUpdateMode bodyUpdateMode, CharacterControllerSpawner.Mode characterControllerMode, Func<float> getSensitivity, Func<float> getAimingSensitivity, IStatisticsManager statisticsManager, AbstractQuestControllerClass questController, AbstractAchievementControllerClass achievementsController)
         {
             spawnPoints = SpawnPoints.CreateFromScene(DateTime.Now, Location_0.SpawnPointParams);
             int spawnSafeDistance = Location_0.SpawnSafeDistanceMeters > 0 ? Location_0.SpawnSafeDistanceMeters : 100;
@@ -645,7 +646,8 @@ namespace StayInTarkov.Coop.SITGameModes
                , null // Let the CoopPlayer Create handle this
                , null // Let the CoopPlayer Create handle this
                , isYourPlayer: true);
-            profile.SetSpawnedInSession(value: false);
+            // Inventory is FIR if Scav
+            profile.SetSpawnedInSession(value: profile.Side == EPlayerSide.Savage);
             if (!CoopGameComponent.TryGetCoopGameComponent(out var coopGameComponent))
             {
                 Logger.LogDebug($"{nameof(vmethod_2)}:Unable to find {nameof(CoopGameComponent)}");
@@ -660,45 +662,59 @@ namespace StayInTarkov.Coop.SITGameModes
 
             // ---------------------------------------------
             // Here we can wait for other players, if desired
+            TimeSpan waitTimeout = TimeSpan.FromSeconds(PluginConfigSettings.Instance.CoopSettings.WaitingTimeBeforeStart);
+
             await Task.Run(async () =>
             {
                 if (coopGameComponent != null)
                 {
+                    System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew(); // Start the stopwatch immediately.
+
                     while (coopGameComponent.PlayerUsers == null)
                     {
                         Logger.LogDebug($"{nameof(vmethod_2)}: {nameof(coopGameComponent.PlayerUsers)} is null");
                         await Task.Delay(1000);
                     }
 
-                    var numbersOfPlayersToWaitFor = SITMatchmaking.HostExpectedNumberOfPlayers - coopGameComponent.PlayerUsers.Count();
                     do
                     {
-                        if (coopGameComponent.PlayerUsers == null)
+    
+                        if (coopGameComponent.PlayerUsers == null || coopGameComponent.PlayerUsers.Count() == 0)
                         {
-                            Logger.LogDebug($"{nameof(vmethod_2)}: {nameof(coopGameComponent.PlayerUsers)} is null");
-                            await Task.Delay(1000);
-                            continue;
-                        }
-
-                        if (coopGameComponent.PlayerUsers.Count() == 0)
-                        {
-                            Logger.LogDebug($"{nameof(vmethod_2)}: {nameof(coopGameComponent.PlayerUsers)} is empty");
+                            Logger.LogDebug($"{nameof(vmethod_2)}: PlayerUsers is null or empty");
                             await Task.Delay(1000);
                             continue;
                         }
 
                         var progress = coopGameComponent.PlayerUsers.Count() / SITMatchmaking.HostExpectedNumberOfPlayers;
-                        numbersOfPlayersToWaitFor = SITMatchmaking.HostExpectedNumberOfPlayers - coopGameComponent.PlayerUsers.Count();
+                        var numbersOfPlayersToWaitFor = SITMatchmaking.HostExpectedNumberOfPlayers - coopGameComponent.PlayerUsers.Count();
+
                         if (SITMatchmaking.TimeHasComeScreenController != null)
                         {
                             SITMatchmaking.TimeHasComeScreenController.ChangeStatus($"Waiting for {numbersOfPlayersToWaitFor} Player(s)", progress);
                         }
 
+                        if (coopGameComponent.PlayerUsers.Count() >= SITMatchmaking.HostExpectedNumberOfPlayers)
+                        {
+                            Logger.LogInfo("Desired number of players reached. Starting the game.");
+                            break;
+                        }
+
+                        if (stopwatch.Elapsed >= waitTimeout)
+                        {
+                            Logger.LogInfo("Timeout reached. Proceeding with current players.");
+                            break;
+                        }
+
                         await Task.Delay(1000);
 
-                    } while (numbersOfPlayersToWaitFor > 0);
+                    } while (true);
+
+                    stopwatch.Stop();
                 }
             });
+
+
 
             // ---------------------------------------------
 
@@ -1123,28 +1139,30 @@ namespace StayInTarkov.Coop.SITGameModes
 
             Logger.LogInfo("CoopGame.Stop");
 
-            // Notify that I have left the Server
-            AkiBackendCommunication.Instance.PostDownWebSocketImmediately(new Dictionary<string, object>() {
-                { "m", "PlayerLeft" },
-                { "profileId", Singleton<GameWorld>.Instance.MainPlayer.ProfileId },
-                { "serverId", CoopGameComponent.GetServerId() }
-
-            });
-
             // If I am the Host/Server, then ensure all the bots have left too
             if (SITMatchmaking.IsServer)
             {
                 foreach (var p in CoopGameComponent.GetCoopGameComponent().Players)
                 {
-                    AkiBackendCommunication.Instance.PostDownWebSocketImmediately(new Dictionary<string, object>() {
+                    AkiBackendCommunication.Instance.PostJson("/coop/server/update", new Dictionary<string, object>() {
 
                             { "m", "PlayerLeft" },
                             { "profileId", p.Value.ProfileId },
                             { "serverId", CoopGameComponent.GetServerId() }
 
-                        });
+                        }.ToJson());
                 }
             }
+
+            // Notify that I have left the Server
+            AkiBackendCommunication.Instance.PostJson("/coop/server/update", new Dictionary<string, object>() {
+                { "m", "PlayerLeft" },
+                { "profileId", Singleton<GameWorld>.Instance.MainPlayer.ProfileId },
+                { "serverId", CoopGameComponent.GetServerId() }
+
+            }.ToJson());
+
+            
 
 
             if (BossWaveManager != null)

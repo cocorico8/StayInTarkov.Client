@@ -1,4 +1,5 @@
-﻿using Comfort.Common;
+﻿using BepInEx.Logging;
+using Comfort.Common;
 using EFT;
 using EFT.InventoryLogic;
 using StayInTarkov.Coop.Components.CoopGameComponents;
@@ -12,6 +13,13 @@ namespace StayInTarkov.Coop
 {
     public static class ItemFinder
     {
+        private static ManualLogSource Logger;
+
+        static ItemFinder()
+        {
+            Logger = BepInEx.Logging.Logger.CreateLogSource(nameof(ItemFinder));
+        }
+
         public static bool TryFindItemOnPlayer(EFT.Player player, string templateId, string itemId, out EFT.InventoryLogic.Item item)
         {
             item = null;
@@ -62,6 +70,7 @@ namespace StayInTarkov.Coop
                 }
             }
 
+            Logger.LogError($"{nameof(TryFindItem)}: Unable to find item {itemId}");
             return false;
         }
 
@@ -75,11 +84,11 @@ namespace StayInTarkov.Coop
 
         public static CoopInventoryController GetPlayerInventoryController(EFT.Player player)
         {
-            var inventoryController = ReflectionHelpers.GetFieldFromTypeByFieldType(player.GetType(), typeof(InventoryController)).GetValue(player) as CoopInventoryController;
+            var inventoryController = ReflectionHelpers.GetFieldFromTypeByFieldType(player.GetType(), typeof(InventoryControllerClass)).GetValue(player) as CoopInventoryController;
             return inventoryController;
         }
 
-        public static bool TryFindItemController(string controllerId, out ItemController itemController)
+        public static bool TryFindItemController(string controllerId, out TraderControllerClass itemController)
         {
             // Find in World
             itemController = Singleton<GameWorld>.Instance.FindControllerById(controllerId);

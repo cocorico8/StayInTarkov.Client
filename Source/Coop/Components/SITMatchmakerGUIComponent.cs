@@ -35,10 +35,7 @@ namespace StayInTarkov.Coop.Components
 
         private GUIStyle styleBrowserWindow { get; set; }
 
-        private GUIStyleState styleStateBrowserBigButtonsNormal { get; } = new GUIStyleState()
-        {
-            textColor = Color.white
-        };
+        private GUIStyleState styleStateBrowserBigButtonsNormal;
         private GUIStyle styleBrowserBigButtons { get; set; }
 
         public RaidSettings RaidSettings { get; internal set; }
@@ -66,8 +63,26 @@ namespace StayInTarkov.Coop.Components
         private string IpAddressInput { get; set; } = SITIPAddressManager.SITIPAddresses.ExternalAddresses.IPAddressV4;
         private int PortInput { get; set; } = 6972;
 
-        private string[] BotAmountStringOptions = new string[] { "AsOnline", "None", "Low", "Medium", "High", "Horde" };
-        private string[] BotDifficultyStringOptions = new string[] { "AsOnline", "Easy", "Medium", "Hard", "Impossible", "Random" };
+        private string[] BotAmountStringOptions = new string[]
+        {
+         (string) StayInTarkovPlugin.LanguageDictionary["SAME_AS_ONLINE"],
+         (string) StayInTarkovPlugin.LanguageDictionary["NONE_AI"],
+         (string) StayInTarkovPlugin.LanguageDictionary["LOW"],
+         (string) StayInTarkovPlugin.LanguageDictionary["MEDIUM"],
+         (string) StayInTarkovPlugin.LanguageDictionary["HIGH"],
+         (string) StayInTarkovPlugin.LanguageDictionary["HORDE"]
+        };
+
+        private string[] BotDifficultyStringOptions = new string[]
+        {
+         (string) StayInTarkovPlugin.LanguageDictionary["SAME_AS_ONLINE_DIFFICULTY"],
+         (string) StayInTarkovPlugin.LanguageDictionary["EASY_DIFFICULTY"],
+         (string) StayInTarkovPlugin.LanguageDictionary["MEDIUM_DIFFICULTY"],
+         (string) StayInTarkovPlugin.LanguageDictionary["HARD_DIFFICULTY"],
+         (string) StayInTarkovPlugin.LanguageDictionary["IMPOSSIBLE_DIFFICULTY"],
+         (string) StayInTarkovPlugin.LanguageDictionary["RANDOM_DIFFICULTY"]
+        };
+
         private string[] ProtocolStringOptions = StayInTarkovPlugin.LanguageDictionary["PROTOCOL_OPTIONS"].ToArray().Select(x=>x.ToString()).ToArray();
         private string[] YesOrNoStringOptions = StayInTarkovPlugin.LanguageDictionary["YES_NO_OPTIONS"].ToArray().Select(x=>x.ToString()).ToArray();
 
@@ -122,6 +137,11 @@ namespace StayInTarkov.Coop.Components
             //    }
             //    //Canvas.GetComponent<UnityEngine.GUIText>();
             //}
+            
+            styleStateBrowserBigButtonsNormal = new GUIStyleState()
+            {
+                textColor = Color.white
+            };
 
             // Create background Texture
             Texture2D texture2D = new(128, 128);
@@ -567,7 +587,7 @@ namespace StayInTarkov.Coop.Components
 
         void DrawHostGameWindow(int windowID)
         {
-            var rows = 9;
+            var rows = 10;
             var halfWindowWidth = windowInnerRect.width / 2;
 
             var cols = new float[] { halfWindowWidth * 0.1f, halfWindowWidth * 0.66f, halfWindowWidth * 1.01f, halfWindowWidth * 1.33f };
@@ -694,7 +714,7 @@ namespace StayInTarkov.Coop.Components
                     case 6:
 
                         // If Peer to Peer is chosen
-                        if (protocolInput == 0)
+                        if (protocolInput == 1)
                         {
                             // P2P Address Option Choice
                             GUI.Label(new Rect(cols[0], y, labelStyle.CalcSize(new GUIContent(StayInTarkovPlugin.LanguageDictionary["P2P_IP_ADDRESS_OPTIONS_LABEL"].ToString())).x, calcSizeContentLabelNumberOfPlayers.y), StayInTarkovPlugin.LanguageDictionary["P2P_IP_ADDRESS_OPTIONS_LABEL"].ToString(), labelStyle);
@@ -705,7 +725,7 @@ namespace StayInTarkov.Coop.Components
                         break;
                     case 7:
                         // If Peer to Peer is chosen and manually set
-                        if (protocolInput == 0 && p2pAddressOptionInput == 1)
+                        if (protocolInput == 1 && p2pAddressOptionInput == 1)
                         {
                             // P2P Address Option Choice
                             GUI.Label(new Rect(cols[0], y, labelStyle.CalcSize(new GUIContent(StayInTarkovPlugin.LanguageDictionary["P2P_IP_ADDRESS_LABEL"].ToString())).x, calcSizeContentLabelNumberOfPlayers.y), StayInTarkovPlugin.LanguageDictionary["P2P_IP_ADDRESS_LABEL"].ToString(), labelStyle);
@@ -713,23 +733,32 @@ namespace StayInTarkov.Coop.Components
                             Rect p2pAddressIPRect = new Rect(cols[1], y, 200, 25);
                             IpAddressInput = GUI.TextField(p2pAddressIPRect, IpAddressInput, 16);
                         }
-                        if (protocolInput == 0 && p2pAddressOptionInput == 0)
+                        if (protocolInput == 1 && p2pAddressOptionInput == 0)
                         {
                             // Port Number Choice
-                            GUI.Label(new Rect(cols[0], y, labelStyle.CalcSize(new GUIContent("Port")).x, calcSizeContentLabelNumberOfPlayers.y), "Port", labelStyle);
+                            GUI.Label(new Rect(cols[0], y, labelStyle.CalcSize(new GUIContent(StayInTarkovPlugin.LanguageDictionary["P2P_PORT_LABEL"].ToString())).x, calcSizeContentLabelNumberOfPlayers.y), StayInTarkovPlugin.LanguageDictionary["P2P_PORT_LABEL"].ToString(), labelStyle);
 
                             Rect p2pPortRect = new Rect(cols[1], y, 100, 25);
                             PortInput = int.Parse(GUI.TextField(p2pPortRect, PortInput.ToString(), 16));
                         }
                         break;
                     case 8:
-                        if (protocolInput == 0 && p2pAddressOptionInput == 1)
+                        if (protocolInput == 1 && p2pAddressOptionInput == 1)
                         {
                             // Port Number Choice
-                            GUI.Label(new Rect(cols[0], y, labelStyle.CalcSize(new GUIContent("Port")).x, calcSizeContentLabelNumberOfPlayers.y), "Port", labelStyle);
+                            GUI.Label(new Rect(cols[0], y, labelStyle.CalcSize(new GUIContent(StayInTarkovPlugin.LanguageDictionary["P2P_PORT_LABEL"].ToString())).x, calcSizeContentLabelNumberOfPlayers.y), StayInTarkovPlugin.LanguageDictionary["P2P_PORT_LABEL"].ToString(), labelStyle);
 
                             Rect p2pPortRect = new Rect(cols[1], y, 100, 25);
                             PortInput = int.Parse(GUI.TextField(p2pPortRect, PortInput.ToString(), 16));
+                        }
+                        break;
+                    case 9:
+                        if(protocolInput == 1)
+                        {
+                            var warningLabelStyle = new GUIStyle(GUI.skin.label);
+                            warningLabelStyle.fontStyle = FontStyle.Bold;
+
+                            GUI.Label(new Rect(cols[1], y, labelStyle.CalcSize(new GUIContent(StayInTarkovPlugin.LanguageDictionary["P2P_WARNING_LABEL"].ToString())).x, calcSizeContentLabelNumberOfPlayers.y), StayInTarkovPlugin.LanguageDictionary["P2P_WARNING_LABEL"].ToString(), warningLabelStyle);
                         }
                         break;
                 }
@@ -777,6 +806,7 @@ namespace StayInTarkov.Coop.Components
             joinPacket.Add("serverId", SITMatchmaking.Profile.ProfileId);
             joinPacket.Add("m", "JoinMatch");
             AkiBackendCommunication.Instance.PostDownWebSocketImmediately(joinPacket.SITToJson());
+            //AkiBackendCommunication.Instance.PostJson("coop/server/update", joinPacket.SITToJson());
 
             DestroyThis();
         }
@@ -793,12 +823,12 @@ namespace StayInTarkov.Coop.Components
                 // There should be 1 player only, but well, who knows if some bugs remain...
                 if (player.IsYourPlayer)
                 {
-                    HealthController.MusclePain musclePain = player.HealthController.FindActiveEffect<HealthController.MusclePain>(EBodyPart.Common);
+                    HealthControllerClass.MusclePain musclePain = player.HealthController.FindActiveEffect<HealthControllerClass.MusclePain>(EBodyPart.Common);
                     if (musclePain != null)
                     {
                         musclePain.Remove();
                     }
-                    HealthController.SevereMusclePain severeMusclePain = player.HealthController.FindActiveEffect<HealthController.SevereMusclePain>(EBodyPart.Common);
+                    HealthControllerClass.SevereMusclePain severeMusclePain = player.HealthController.FindActiveEffect<HealthControllerClass.SevereMusclePain>(EBodyPart.Common);
                     if (severeMusclePain != null)
                     {
                         severeMusclePain.Remove();

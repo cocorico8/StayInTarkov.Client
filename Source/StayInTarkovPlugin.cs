@@ -236,11 +236,11 @@ namespace StayInTarkov
                     {
                         var majorN1 = EFTVersionMajor.Split('.')[0]; // 0
                         var majorN2 = EFTVersionMajor.Split('.')[1]; // 14
-                        var majorN3 = EFTVersionMajor.Split('.')[2]; // 1
-                        var majorN4 = EFTVersionMajor.Split('.')[3]; // 0
+                        var majorN3 = EFTVersionMajor.Split('.')[2]; // 0
+                        var majorN4 = EFTVersionMajor.Split('.')[3]; // 2
                         var majorN5 = EFTVersionMajor.Split('.')[4]; // build number
 
-                        if (majorN1 != "0" || majorN2 != "14" || majorN3 != "1" || majorN4 != "0")
+                        if (majorN1 != "0" || majorN2 != "14" || majorN3 != "0" || majorN4 != "2")
                         {
                             Logger.LogError("Version Check: This version of SIT is not designed to work with this version of EFT.");
                         }
@@ -302,9 +302,9 @@ namespace StayInTarkov
 
                 //// --------- Player Init & Health -------------------
                 EnableSPPatches_PlayerHealth(Config);
-
+                
                 //// --------- SCAV MODE ---------------------
-                new RemoveScavModeButtonPatch().Enable();
+                //new RemoveScavModeButtonPatch().Enable();
 
                 //// --------- READY Button ---------------------
                 new RemoveReadyButtonPatch().Enable();
@@ -338,7 +338,6 @@ namespace StayInTarkov
         {
             //new OfflineRaidMenuPatch().Enable();
             new OfflineSettingsScreenPatch().Enable();
-
         }
 
         private static void EnableSPPatches_PlayerProgression()
@@ -371,6 +370,7 @@ namespace StayInTarkov
             new SpawnProcessNegativeValuePatch().Enable();
             new LocationLootCacheBustingPatch().Enable();
             new FixBrokenSpawnOnSandboxPatch().Enable();
+            new IsEnemyPatch().Enable();
         }
 
         private void EnableCoopPatches()
