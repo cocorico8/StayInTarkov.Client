@@ -721,11 +721,6 @@ namespace StayInTarkov.Coop.Components.CoopGameComponents
                 //instance.NetworkQuality.CreateMeasurers();
             }
 
-            if (Singleton<PreloaderUI>.Instantiated && SITCheckConfirmed[0] == 0 && SITCheckConfirmed[1] == 0)
-            {
-                SITCheckConfirmed[1] = 1;
-                Singleton<PreloaderUI>.Instance.ShowCriticalErrorScreen("", StayInTarkovPlugin.IllegalMessage, ErrorScreen.EButtonType.QuitButton, 60, () => { Application.Quit(); }, () => { Application.Quit(); });
-            }
         }
 
         byte[] SITCheckConfirmed { get; } = new byte[2] { 0, 0 };
