@@ -156,6 +156,7 @@
   
   <ItemGroup>
     <Folder Include="Networking\Nat\" />
+    <Folder Include="Multiplayer\" />
     <Folder Include="Properties\" />
   </ItemGroup>
   
