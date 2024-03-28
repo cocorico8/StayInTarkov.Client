@@ -6,6 +6,7 @@ using EFT.Interactive;
 using EFT.InventoryLogic;
 using Newtonsoft.Json.Linq;
 using RootMotion.FinalIK;
+using StayInTarkov.AkiSupport.Singleplayer.Utils.InRaid;
 using StayInTarkov.Coop.Components.CoopGameComponents;
 using StayInTarkov.Coop.Controllers;
 using StayInTarkov.Coop.Controllers.CoopInventory;
@@ -14,11 +15,13 @@ using StayInTarkov.Coop.Controllers.Health;
 using StayInTarkov.Coop.NetworkPacket.Player;
 using StayInTarkov.Coop.NetworkPacket.Player.Health;
 using StayInTarkov.Coop.NetworkPacket.Player.Proceed;
-using StayInTarkov.Core.Player;
+//using StayInTarkov.Core.Player;
 using StayInTarkov.Networking;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
 
@@ -46,7 +49,8 @@ namespace StayInTarkov.Coop.Players
             , AbstractQuestControllerClass questController = null
             , AbstractAchievementControllerClass achievementsController = null
             , bool isYourPlayer = false
-            , bool isClientDrone = false)
+            , bool isClientDrone = false
+            , string initialMongoId = null)
         {
             CoopPlayer player = null;
 
@@ -85,11 +89,12 @@ namespace StayInTarkov.Coop.Players
             player.IsYourPlayer = isYourPlayer;
             player.Position = position;
 
-            InventoryControllerClass inventoryController = isYourPlayer || player is CoopPlayer
-                ? new CoopInventoryController(player, profile, false)
-                : new CoopInventoryControllerClient(player, profile, false);
+            InventoryControllerClass inventoryController = player is CoopPlayerClient 
+                ? new CoopInventoryControllerClient(player, profile, false, initialMongoId)
+                : new CoopInventoryController(player, profile, false);
+            player.BepInLogger.LogDebug($"{inventoryController.GetType().Name} Instantiated");
 
-            foreach(var item in profile.Inventory.AllRealPlayerItems)
+            foreach (var item in profile.Inventory.AllRealPlayerItems)
             {
                 if(item.Owner == null)
                 {
@@ -148,11 +153,11 @@ namespace StayInTarkov.Coop.Players
             player.Position = position;
 
             // If this is a Client Drone add Player Replicated Component
-            if (isClientDrone)
-            {
-                var prc = player.GetOrAddComponent<PlayerReplicatedComponent>();
-                prc.IsClientDrone = true;
-            }
+            //if (isClientDrone)
+            //{
+            //    var prc = player.GetOrAddComponent<PlayerReplicatedComponent>();
+            //    prc.IsClientDrone = true;
+            //}
 
             return player;
         }
@@ -432,7 +437,20 @@ namespace StayInTarkov.Coop.Players
             // Paulov: Unknown / Unable to replicate issue where some User's feed would cause a crash
             //if(PluginConfigSettings.Instance.CoopSettings.SETTING_ShowFeed)
             //    DisplayMessageNotifications.DisplayMessageNotification(attacker != null ? $"\"{GeneratePlayerNameWithSide(attacker)}\" killed \"{GeneratePlayerNameWithSide(victim)}\"" : $"\"{GeneratePlayerNameWithSide(victim)}\" has died because of \"{("DamageType_" + damageType.ToString()).Localized()}\"");
-            
+
+            // Make it only working in Scav Raid
+            if (RaidChangesUtil.IsScavRaid)
+            {
+                if (victim.Profile.Side == EPlayerSide.Savage)
+                {
+                    if (attacker != null && attacker.Profile.Side != EPlayerSide.Savage)
+                    {
+                        LastAggressor.Loyalty.method_2(victim);
+                        LastAggressor.Loyalty.method_4(victim.Profile.Info.Settings);
+                    }
+                }
+            }
+
             using KillPacket killPacket = new KillPacket(ProfileId, damageType);
             GameClient.SendData(killPacket.Serialize());
         }
@@ -741,6 +759,12 @@ namespace StayInTarkov.Coop.Players
 
         void Awake()
         {
+
+        }
+
+        void Start()
+        {
+            CreateDogtag();
         }
 
         public override void ComplexLateUpdate(EUpdateQueue queue, float deltaTime)
@@ -755,6 +779,54 @@ namespace StayInTarkov.Coop.Players
             }
         }
 
+        void CreateDogtag()
+        {
+            BepInLogger.LogDebug($"{nameof(CreateDogtag)}");
+            if (Side != EPlayerSide.Savage && ReflectionHelpers.GetDogtagItem(this) == null)
+            {
+                if (!SITGameComponent.TryGetCoopGameComponent(out SITGameComponent coopGameComponent))
+                    return;
+
+                Slot dogtagSlot = Inventory.Equipment.GetSlot(EquipmentSlot.Dogtag);
+                if (dogtagSlot == null)
+                    return;
+
+                string itemId = "";
+                using (SHA256 sha256 = SHA256.Create())
+                {
+                    StringBuilder sb = new();
+
+                    byte[] hashes = sha256.ComputeHash(Encoding.UTF8.GetBytes(coopGameComponent.ServerId + ProfileId + coopGameComponent.Timestamp));
+                    for (int i = 0; i < hashes.Length; i++)
+                        sb.Append(hashes[i].ToString("x2"));
+                    itemId = sb.ToString().Substring(0, 24);
+                }
+
+                Item dogtag = Spawners.ItemFactory.CreateItem(itemId, Side == EPlayerSide.Bear ? DogtagComponent.BearDogtagsTemplate : DogtagComponent.UsecDogtagsTemplate);
+                if (dogtag != null)
+                    dogtagSlot.AddWithoutRestrictions(dogtag);
+            }
+        }
+
+        public void ProcessModuleReplicationPatch(Dictionary<string, object> packet)
+        {
+            if (!packet.ContainsKey("m"))
+                return;
+
+            var method = packet["m"].ToString();
+
+            if (!ModuleReplicationPatch.Patches.ContainsKey(method))
+                return;
+
+            var patch = ModuleReplicationPatch.Patches[method];
+            if (patch != null)
+            {
+                patch.Replicated(this, packet);
+                return;
+            }
+
+
+        }
 
     }
 }

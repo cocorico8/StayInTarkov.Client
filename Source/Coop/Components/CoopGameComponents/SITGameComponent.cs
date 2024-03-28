@@ -15,7 +15,7 @@ using StayInTarkov.Coop.Player;
 using StayInTarkov.Coop.Players;
 using StayInTarkov.Coop.SITGameModes;
 using StayInTarkov.Coop.Web;
-using StayInTarkov.Core.Player;
+//using StayInTarkov.Core.Player;
 using StayInTarkov.EssentialPatches;
 using StayInTarkov.Memory;
 using StayInTarkov.Networking;
@@ -31,10 +31,10 @@ using System.Threading.Tasks;
 using UnityEngine;
 
 using Rect = UnityEngine.Rect;
-using BSGMemoryGC = GClass772;
 using StayInTarkov.Coop.NetworkPacket.Raid;
 using Diz.Jobs;
 using System.Net.NetworkInformation;
+using EFT.Counters;
 
 namespace StayInTarkov.Coop.Components.CoopGameComponents
 {
@@ -111,6 +111,7 @@ namespace StayInTarkov.Coop.Components.CoopGameComponents
         public ConcurrentDictionary<string, PlayerInformationPacket> PlayersToSpawnPacket { get; private set; } = new();
         public Dictionary<string, Profile> PlayersToSpawnProfiles { get; private set; } = new();
         public ConcurrentDictionary<string, Vector3> PlayersToSpawnPositions { get; private set; } = new();
+        public ConcurrentDictionary<string, string> PlayerInventoryMongoIds { get; private set; } = new();
 
         public HashSet<string> ProfileIdsAI { get; } = new();
         public HashSet<string> ProfileIdsUser { get; } = new();
@@ -429,6 +430,14 @@ namespace StayInTarkov.Coop.Components.CoopGameComponents
                     if (!ExtractedProfilesSent.Contains(profileId))
                     {
                         ExtractedProfilesSent.Add(profileId);
+                        if (player.Profile.Side == EPlayerSide.Savage)
+                        {
+                            player.Profile.EftStats.SessionCounters.AddDouble(0.01,
+                            [
+                                CounterTag.FenceStanding,
+                                EFenceStandingSource.ExitStanding
+                            ]);
+                        }
                         AkiBackendCommunicationCoop.PostLocalPlayerData(player
                             , new Dictionary<string, object>() { { "m", "Extraction" }, { "Extracted", true } }
                             );
@@ -474,19 +483,19 @@ namespace StayInTarkov.Coop.Components.CoopGameComponents
         {
             StayInTarkovHelperConstants.Logger.LogDebug($"CoopGameComponent:OnDestroy");
 
-            if (Players != null)
-            {
-                foreach (var pl in Players)
-                {
-                    if (pl.Value == null)
-                        continue;
+            //if (Players != null)
+            //{
+            //    foreach (var pl in Players)
+            //    {
+            //        if (pl.Value == null)
+            //            continue;
 
-                    if (pl.Value.TryGetComponent<PlayerReplicatedComponent>(out var prc))
-                    {
-                        DestroyImmediate(prc);
-                    }
-                }
-            }
+            //        if (pl.Value.TryGetComponent<PlayerReplicatedComponent>(out var prc))
+            //        {
+            //            DestroyImmediate(prc);
+            //        }
+            //    }
+            //}
             Players.Clear();
             PlayersToSpawnProfiles.Clear();
             PlayersToSpawnPositions.Clear();
@@ -930,7 +939,7 @@ namespace StayInTarkov.Coop.Components.CoopGameComponents
                         continue;
 
                     Vector3 newPosition = PlayersToSpawnPacket[p.Key].BodyPosition;
-                    ProcessPlayerBotSpawn(PlayersToSpawnPacket[p.Key], p.Key, newPosition, false);
+                    ProcessPlayerBotSpawn(PlayersToSpawnPacket[p.Key], p.Key, newPosition, false, PlayersToSpawnPacket[p.Key].InitialInventoryMongoId);
                 }
 
 
@@ -938,7 +947,7 @@ namespace StayInTarkov.Coop.Components.CoopGameComponents
             //}
         }
 
-        private void ProcessPlayerBotSpawn(PlayerInformationPacket packet, string profileId, Vector3 newPosition, bool isBot)
+        private void ProcessPlayerBotSpawn(PlayerInformationPacket packet, string profileId, Vector3 newPosition, bool isBot, string mongoId)
         {
             // If not showing drones. Check whether the "Player" has been registered, if they have, then ignore the drone
             if (!PluginConfigSettings.Instance.CoopSettings.SETTING_DEBUGSpawnDronesOnServer)
@@ -960,22 +969,9 @@ namespace StayInTarkov.Coop.Components.CoopGameComponents
                 }
             }
 
+            if (!PlayerInventoryMongoIds.ContainsKey(profileId))
+                PlayerInventoryMongoIds.TryAdd(profileId, mongoId);
 
-            // If CreatePhysicalOtherPlayerOrBot has been done before. Then ignore the Deserialization section and continue.
-            //if (PlayersToSpawn.ContainsKey(profileId)
-            //    && PlayersToSpawnProfiles.ContainsKey(profileId)
-            //    && PlayersToSpawnProfiles[profileId] != null
-            //    )
-            //{
-            //    var isDead = false;
-            //    if (packet.ContainsKey("isDead"))
-            //    {
-            //        Logger.LogDebug($"{DateTime.Now.ToString("MM/dd/yyyy HH:mm:ss.fff")}: Packet for {profileId} contains DEATH message, registered handling of this on spawn");
-            //        isDead = bool.Parse(packet["isDead"].ToString());
-            //    }
-            //    CreatePhysicalOtherPlayerOrBot(PlayersToSpawnProfiles[profileId], newPosition, isDead);
-            //    return;
-            //}
 
             if (!PlayersToSpawnPositions.ContainsKey(profileId))
                 PlayersToSpawnPositions.TryAdd(profileId, newPosition);
@@ -1177,6 +1173,7 @@ namespace StayInTarkov.Coop.Components.CoopGameComponents
                , null
                , isYourPlayer: false
                , isClientDrone: true
+               , initialMongoId: PlayerInventoryMongoIds[profile.Id]    
                ).Result;
 
             if (otherPlayer == null)
@@ -1204,8 +1201,8 @@ namespace StayInTarkov.Coop.Components.CoopGameComponents
 
             // Create/Add PlayerReplicatedComponent to the LocalPlayer
             // This shouldn't be needed. Handled in CoopPlayer.Create code
-            var prc = otherPlayer.GetOrAddComponent<PlayerReplicatedComponent>();
-            prc.IsClientDrone = true;
+            //var prc = otherPlayer.GetOrAddComponent<PlayerReplicatedComponent>();
+            //prc.IsClientDrone = true;
 
             if (!SITMatchmaking.IsClient)
             {

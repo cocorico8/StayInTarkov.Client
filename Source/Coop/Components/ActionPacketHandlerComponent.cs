@@ -13,7 +13,7 @@ using StayInTarkov.Coop.NetworkPacket.Player;
 using StayInTarkov.Coop.Players;
 using StayInTarkov.Coop.SITGameModes;
 using StayInTarkov.Coop.World;
-using StayInTarkov.Core.Player;
+//using StayInTarkov.Core.Player;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -33,7 +33,6 @@ namespace StayInTarkov.Coop.Components
 
         public readonly BlockingCollection<Dictionary<string, object>> ActionPackets = new(9999);
         public BlockingCollection<Dictionary<string, object>> ActionPacketsMovement { get; private set; } = new(9999);
-        public BlockingCollection<Dictionary<string, object>> ActionPacketsDamage { get; private set; } = new(9999);
         public ConcurrentDictionary<string, CoopPlayer> Players => CoopGameComponent.Players;
         public ManualLogSource Logger { get; private set; }
 
@@ -116,12 +115,8 @@ namespace StayInTarkov.Coop.Components
                     {
                         continue;
                     }
-
-                    if (stopwatchActionPacket.ElapsedMilliseconds > 1)
-                        Logger.LogDebug($"ActionSITPackets {result.Method} took {stopwatchActionPacket.ElapsedMilliseconds}ms to process!");
                 }
-                if (stopwatchActionPackets.ElapsedMilliseconds > 1)
-                    Logger.LogDebug($"ActionSITPackets took {stopwatchActionPackets.ElapsedMilliseconds}ms to process!");
+
             }
 
             if (ActionPackets.Count > 0)
@@ -340,11 +335,8 @@ namespace StayInTarkov.Coop.Components
             if(plyr == null)
                 return false;
 
-            var prc = plyr.GetComponent<PlayerReplicatedComponent>();
-            if (prc == null)
-                return false;
-                
-            prc.ProcessPacket(packet);
+            plyr.ProcessModuleReplicationPatch(packet);
+           
             return true;
         }
 
