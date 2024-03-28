@@ -131,7 +131,10 @@ namespace StayInTarkov
             new AirdropFlarePatch().Enable();
         }
 
-        stayInTarkovHelperConstants.Logger.LogInfo("Thanks for playing the modified version by cocorico8. Please buy the game when you can, it's incredible and support the developers.")
+        void Thanks()
+        {
+            StayInTarkovHelperConstants.Logger.LogInfo("Thanks for playing the modified version by cocorico8. Please buy the game when you can, it's incredible and support the developers.");
+        }
 
         private void ReadInLanguageDictionary()
         {
