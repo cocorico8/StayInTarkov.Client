@@ -131,32 +131,7 @@ namespace StayInTarkov
             new AirdropFlarePatch().Enable();
         }
 
-        private bool shownCheckError = false;
-        private bool bsgThanksShown = false;
-
-        void Update()
-        {
-            if (!LegalGameCheck.Checked)
-                LegalGameCheck.LegalityCheck(Config);
-
-            if (Singleton<PreloaderUI>.Instantiated 
-                && !shownCheckError 
-                && LegalGameCheck.LegalGameFound[0] != 0x1
-                && LegalGameCheck.LegalGameFound[1] != 0x0
-                )
-            {
-                shownCheckError = true;
-                Singleton<PreloaderUI>.Instance.ShowCriticalErrorScreen("", StayInTarkovPlugin.IllegalMessage, ErrorScreen.EButtonType.QuitButton, 60, () => { Application.Quit(); }, () => { Application.Quit(); });
-            }
-            else
-            {
-                if (!bsgThanksShown)
-                {
-                    bsgThanksShown = true;
-                    StayInTarkovHelperConstants.Logger.LogInfo("Official EFT Found. Thanks for supporting BSG.");
-                }
-            }
-        }
+        stayInTarkovHelperConstants.Logger.LogInfo("Thanks for playing the modified version by cocorico8. Please buy the game when you can, it's incredible and support the developers.")
 
         private void ReadInLanguageDictionary()
         {
