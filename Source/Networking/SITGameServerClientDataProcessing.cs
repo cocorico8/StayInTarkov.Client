@@ -19,12 +19,11 @@ namespace StayInTarkov.Networking
 {
     public static class SITGameServerClientDataProcessing
     {
-        public static bool DEBUGPACKETS = false;
-
         public const string PACKET_TAG_METHOD = "m";
         public const string PACKET_TAG_SERVERID = "serverId";
         public const string PACKET_TAG_DATA = "data";
 
+        public static event Action<ushort> OnLatencyUpdated;
 
         public static ManualLogSource Logger { get; }
 
@@ -68,17 +67,7 @@ namespace StayInTarkov.Networking
                 // Is a RAW SIT Serialized packet
                 else
                 {
-
-                    //Logger.LogDebug(Encoding.UTF8.GetString(data));
-                    //BasePlayerPacket basePlayerPacket = new BasePlayerPacket();
-                    //packet = basePlayerPacket.ToDictionary(data);
                     ProcessSITPacket(data, ref packet, out sitPacket);
-
-                }
-
-                if (DEBUGPACKETS)
-                {
-                    Logger.LogInfo("GOT :" + sData);
                 }
 
                 var coopGameComponent = SITGameComponent.GetCoopGameComponent();
@@ -95,34 +84,13 @@ namespace StayInTarkov.Networking
                     return;
                 }
 
-                if (DEBUGPACKETS)
-                {
-                    Logger.LogInfo("GOT :" + packet.SITToJson());
-                }
-
-                if (packet.ContainsKey("dataList"))
-                {
-                    if (ProcessDataListPacket(ref packet))
-                        return;
-                }
-
-                //Logger.LogDebug($"Step.1. Packet exists. {packet.ToJson()}");
-
                 // If this is a pong packet, resolve and create a smooth ping
                 if (packet.ContainsKey("pong"))
                 {
                     var pongRaw = long.Parse(packet["pong"].ToString());
                     var dtPong = new DateTime(pongRaw);
-                    var serverPing = (int)(DateTime.UtcNow - dtPong).TotalMilliseconds;
-                    coopGameComponent.UpdatePing(serverPing);
-                    return;
-                }
-
-                if (packet.ContainsKey("HostPing"))
-                {
-                    var dtHP = new DateTime(long.Parse(packet["HostPing"].ToString()));
-                    var timeSpanOfHostToMe = DateTime.UtcNow - dtHP;
-                    //HostPing = (int)Math.Round(timeSpanOfHostToMe.TotalMilliseconds);
+                    var latencyMs = (DateTime.UtcNow - dtPong).TotalMilliseconds / 2;
+                    OnLatencyUpdated((ushort)latencyMs);
                     return;
                 }
 
@@ -147,13 +115,10 @@ namespace StayInTarkov.Networking
                     return;
                 }
 
-
-
                 // -------------------------------------------------------
                 // Add to the Coop Game Component Action Packets
                 if (coopGameComponent == null || coopGameComponent.ActionPackets == null || coopGameComponent.ActionPacketHandler == null)
                     return;
-
 
                 //if (packet.ContainsKey(PACKET_TAG_METHOD)
                 //    && packet[PACKET_TAG_METHOD].ToString() == "Move")
@@ -239,12 +204,6 @@ namespace StayInTarkov.Networking
                 catch { }
             }
 
-            if (DEBUGPACKETS)
-            {
-                Logger.LogInfo(" ==================SIT Packet============= ");
-                Logger.LogInfo(dictObject.ToJson());
-            }
-
             packet = DeserializeIntoPacket(data, packet, bp);
         }
 
@@ -298,10 +257,6 @@ namespace StayInTarkov.Networking
 
                         if (coopGC.Players.ContainsKey(playerStatePacket.ProfileId))
                             coopGC.Players[playerStatePacket.ProfileId].ReceivePlayerStatePacket(playerStatePacket);
-
-
-                        var serverPing = (int)(DateTime.UtcNow - new DateTime(long.Parse(packet["t"].ToString()))).TotalMilliseconds;
-                        coopGC.ServerPingSmooth.Enqueue(serverPing);
 
                         break;
                     case "Multiple":

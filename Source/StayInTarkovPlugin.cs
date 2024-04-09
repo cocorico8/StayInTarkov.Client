@@ -85,7 +85,6 @@ namespace StayInTarkov
             // Gather the Major/Minor numbers of EFT ASAP
             new VersionLabelPatch(Config).Enable();
             StartCoroutine(VersionChecks());
-            SITIPAddressManager.GetExternalIPAddress();
 
             ReadInLanguageDictionary();
 
