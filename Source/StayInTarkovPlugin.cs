@@ -29,6 +29,7 @@ using System.Text;
 using System.Threading;
 using BepInEx.Configuration;
 using UnityEngine;
+using StayInTarkov.AkiSupport.Singleplayer.Patches.RaidFix;
 
 namespace StayInTarkov
 {
@@ -257,6 +258,8 @@ namespace StayInTarkov
                 new SslCertificatePatch().Enable();
                 new Aki.Core.Patches.UnityWebRequestPatch().Enable();
                 new SendCommandsPatch().Enable();
+                // Fixes
+                new EndRaidDebug().Enable();
 
                 //https to http | wss to ws
                 var url = DetectBackendUrlAndToken.GetBackendConnection().BackendUrl;
@@ -348,6 +351,7 @@ namespace StayInTarkov
         private static void EnableSPPatches_Bots(BepInEx.Configuration.ConfigFile config)
         {
             new CoreDifficultyPatch().Enable();
+            new BossSpawnChancePatch().Enable();
             new BotDifficultyPatch().Enable();
             new BotSettingsRepoClassIsFollowerFixPatch().Enable();
             new BotSelfEnemyPatch().Enable();
