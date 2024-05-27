@@ -37,14 +37,15 @@ namespace StayInTarkov.Coop.Web
             }
             if (!data.ContainsKey("serverId"))
             {
-                data.Add("serverId", CoopGameComponent.GetServerId());
+                data.Add("serverId", SITGameComponent.GetServerId());
             }
             if (!data.ContainsKey("profileId"))
             {
                 data.Add("profileId", player.ProfileId);
             }
             //AkiBackendCommunication.Instance.SendDataToPool("", data);
-            GameClient.SendDataToServer(Encoding.UTF8.GetBytes(data.ToJson()));
+            GameClient.SendData(Encoding.UTF8.GetBytes(data.ToJson()));
+            //AkiBackendCommunication.Instance.PostJson("/coop/server/update", data.ToJson());
             generatedData = data;
         }
     }

@@ -1,4 +1,5 @@
-﻿using Comfort.Common;
+﻿using BepInEx.Logging;
+using Comfort.Common;
 using EFT;
 using EFT.InventoryLogic;
 using StayInTarkov.Coop.Components.CoopGameComponents;
@@ -12,24 +13,45 @@ namespace StayInTarkov.Coop
 {
     public static class ItemFinder
     {
-        public static bool TryFindItemOnPlayer(EFT.Player player, string templateId, string itemId, out EFT.InventoryLogic.Item item)
+        private static ManualLogSource Logger;
+
+        static ItemFinder()
+        {
+            Logger = BepInEx.Logging.Logger.CreateLogSource(nameof(ItemFinder));
+        }
+
+        public static bool TryFindItemOnPlayer(EFT.Player player, string templateId, string itemId, out Item item)
         {
             item = null;
 
-            if (!string.IsNullOrEmpty(templateId))
+            var result = player.FindItemById(itemId, false, false);
+            if (result.Succeeded)
             {
-                //var allItemsOfTemplate = player.Profile.Inventory.GetAllItemByTemplate(templateId);
-                var allEquipmentItems = player.Profile.Inventory.GetAllEquipmentItems();
-
-                if (!allEquipmentItems.Any())
-                    return false;
-
-                item = allEquipmentItems.FirstOrDefault(x => x.Id == itemId);
+                item = result.Value;
+                if(item.Owner == null)
+                {
+                    Logger.LogError($"{nameof(TryFindItemOnPlayer)} item owner is null!");
+                }
             }
             else
             {
-                item = player.Profile.Inventory.AllPlayerItems.FirstOrDefault(x => x.Id == itemId);
+                Logger.LogError($"{nameof(TryFindItemOnPlayer)} {result.Error}");
             }
+
+            //if (!string.IsNullOrEmpty(templateId))
+            //{
+            //    //var allItemsOfTemplate = player.Profile.Inventory.GetAllItemByTemplate(templateId);
+            //    var allEquipmentItems = player.Profile.Inventory.GetPlayerItems(EPlayerItems.Equipment);
+
+            //    if (!allEquipmentItems.Any())
+            //        return false;
+
+            //    item = allEquipmentItems.FirstOrDefault(x => x.Id == itemId);
+            //}
+            //else
+            //{
+            //    item = player.Profile.Inventory.AllRealPlayerItems.FirstOrDefault(x => x.Id == itemId);
+            //}
             return item != null;
         }
 
@@ -49,18 +71,21 @@ namespace StayInTarkov.Coop
 
         public static bool TryFindItem(string itemId, out EFT.InventoryLogic.Item item)
         {
+            var coopGC = SITGameComponent.GetCoopGameComponent();
+            foreach (var player in coopGC.Players)
+            {
+                if (TryFindItemOnPlayer(player.Value, null, itemId, out item))
+                    return item != null;
+            }
+
             if (TryFindItemInWorld(itemId, out item))
                 return item != null;
-            else
-            {
-                var coopGC = CoopGameComponent.GetCoopGameComponent();
 
-                foreach (var player in coopGC.Players)
-                {
-                    if (TryFindItemOnPlayer(player.Value, null, itemId, out item))
-                        return true;
-                }
-            }
+#if DEBUG
+            Logger.LogDebug($"{nameof(TryFindItem)}: Unable to find item {itemId}");
+            System.Diagnostics.StackTrace t = new System.Diagnostics.StackTrace();
+            Logger.LogDebug($"{nameof(TryFindItem)}: {t}");
+#endif
 
             return false;
         }
@@ -73,13 +98,13 @@ namespace StayInTarkov.Coop
             return itemComponent;
         }
 
-        public static CoopInventoryController GetPlayerInventoryController(EFT.Player player)
+        public static TraderControllerClass GetPlayerInventoryController(EFT.Player player)
         {
-            var inventoryController = ReflectionHelpers.GetFieldFromTypeByFieldType(player.GetType(), typeof(InventoryController)).GetValue(player) as CoopInventoryController;
+            var inventoryController = ReflectionHelpers.GetFieldFromTypeByFieldType(player.GetType(), typeof(InventoryControllerClass)).GetValue(player) as TraderControllerClass;
             return inventoryController;
         }
 
-        public static bool TryFindItemController(string controllerId, out ItemController itemController)
+        public static bool TryFindItemController(string controllerId, out TraderControllerClass itemController)
         {
             // Find in World
             itemController = Singleton<GameWorld>.Instance.FindControllerById(controllerId);
@@ -87,7 +112,7 @@ namespace StayInTarkov.Coop
                 return true;
 
             // Find a Player
-            var coopGC = CoopGameComponent.GetCoopGameComponent();
+            var coopGC = SITGameComponent.GetCoopGameComponent();
             if (coopGC == null)
                 return false;
 

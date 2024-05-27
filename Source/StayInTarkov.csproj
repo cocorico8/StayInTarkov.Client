@@ -12,6 +12,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Coop\Matchmaker\MatchmakerAccept\Grouping\**" />
+    <Compile Remove="Networking\Packets\**" />
+    <EmbeddedResource Remove="Coop\Matchmaker\MatchmakerAccept\Grouping\**" />
+    <EmbeddedResource Remove="Networking\Packets\**" />
+    <None Remove="Coop\Matchmaker\MatchmakerAccept\Grouping\**" />
+    <None Remove="Networking\Packets\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <EmbeddedResource Include="Resources\Language\English.json">
     </EmbeddedResource>
     <EmbeddedResource Include="Resources\Language\French.json" />
@@ -51,6 +60,10 @@
 	</Reference>
     <Reference Include="bsg.componentace.compression.libs.zlib">
       <HintPath>..\References\bsg.componentace.compression.libs.zlib.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="bsg.console.core">
+      <HintPath>..\References\bsg.console.core.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="com.unity.multiplayer-hlapi.Runtime">
@@ -103,7 +116,8 @@
     </Reference>
     <Reference Include="Unity.TextMeshPro">
       <HintPath>..\References\Unity.TextMeshPro.dll</HintPath>
-    </Reference>
+		<Private>False</Private>
+	</Reference>
     <Reference Include="UnityEngine">
       <HintPath>..\References\UnityEngine.dll</HintPath>
       <Private>False</Private>
@@ -134,6 +148,12 @@
 		  <HintPath>..\References\Newtonsoft.Json.dll</HintPath>
 		  <Private>False</Private>
     </Reference>
+  </ItemGroup>
+  
+  <ItemGroup>
+    <Folder Include="Networking\Nat\" />
+    <Folder Include="Multiplayer\" />
+    <Folder Include="Properties\" />
   </ItemGroup>
   
 </Project>

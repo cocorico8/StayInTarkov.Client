@@ -16,7 +16,7 @@ namespace StayInTarkov.AkiSupport.Singleplayer.Patches.Quests
 
         static DogtagPatch()
         {
-            _ = nameof(Equipment.GetSlot);
+            _ = nameof(EquipmentClass.GetSlot);
             _ = nameof(DamageInfo.Weapon);
 
             _getEquipmentProperty = ReflectionHelpers.GetPropertyFromType(typeof(Player), "Equipment");
@@ -67,7 +67,7 @@ namespace StayInTarkov.AkiSupport.Singleplayer.Patches.Quests
 
         private static Item GetDogTagItemFromPlayerWhoDied(Player __instance)
         {
-            var equipment = (Equipment)_getEquipmentProperty.GetValue(__instance);
+            var equipment = (EquipmentClass)_getEquipmentProperty.GetValue(__instance);
             if (equipment == null)
             {
                 Logger.LogError("DogtagPatch error > Player has no equipment");
@@ -103,7 +103,17 @@ namespace StayInTarkov.AkiSupport.Singleplayer.Patches.Quests
             itemComponent.Status = "Killed by";
             itemComponent.KillerAccountId = aggressor.Profile.AccountId;
             itemComponent.KillerProfileId = aggressor.Profile.Id;
-            itemComponent.WeaponName = damageInfo.Weapon.Name;
+
+            if (damageInfo.Weapon == null) // Fixed an issue where PMCs sometimes failed to generate dog tags after being killed by knives or grenades, keep standing and could not be looted.
+            {
+                Logger.LogDebug($"DogtagPatch Killed by weapon: unknown");
+                itemComponent.WeaponName = "Unknown";
+            }
+            else 
+            {
+                Logger.LogDebug($"DogtagPatch Killed by weapon: {damageInfo.Weapon.Name}");
+                itemComponent.WeaponName = damageInfo.Weapon.Name;
+            }
 
             if (__instance.Profile.Info.Experience > 0)
             {

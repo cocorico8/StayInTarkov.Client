@@ -1,16 +1,20 @@
 ﻿using BepInEx.Logging;
 using Comfort.Common;
+using Diz.LanguageExtensions;
 using EFT;
 using EFT.InventoryLogic;
 using EFT.UI;
 using JetBrains.Annotations;
-//using StayInTarkov.Coop.ItemControllerPatches;
-using StayInTarkov.Coop.NetworkPacket;
+using StayInTarkov.Coop.NetworkPacket.Player.Inventory;
+using StayInTarkov.Coop.NetworkPacket.Player.Proceed;
+using StayInTarkov.Coop.Players;
 using StayInTarkov.Networking;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Threading.Tasks;
+using UnityEngine;
 
 namespace StayInTarkov.Coop.Controllers.CoopInventory
 {
@@ -24,166 +28,179 @@ namespace StayInTarkov.Coop.Controllers.CoopInventory
 
         private EFT.Player Player { get; set; }
 
-        private HashSet<AbstractInventoryOperation> InventoryOperations { get; } = new();
+        public CoopInventoryController(EFT.Player player, Profile profile, bool examined) : base (player, profile, examined) 
+        { 
+            BepInLogger = BepInEx.Logging.Logger.CreateLogSource(nameof(CoopInventoryController));
+            Player = player;
+        }
+
+        public string GetMongoId()
+        {
+            return mongoID_0;
+        }
+
+
+        public override void Execute(Operation1 operation, Callback callback)
+        {
+            // Debug the operation
+            BepInLogger.LogDebug($"Execute(Operation1 operation,:{operation}");
+
+            base.Execute(operation, callback);
+        }
+
+        protected readonly Dictionary<uint, Callback<int, bool, EOperationStatus>> OperationCallbacks = new Dictionary<uint, Callback<int, bool, EOperationStatus>>();
+
+        private HashSet<ushort> IgnoreOperations = new();
+
+        public uint CreateOperation<T>(T operation, Callback<int, bool, EOperationStatus> action) where T : AbstractInventoryOperation
+        {
+            ushort id = operation.Id;
+            OperationCallbacks.Add(id, action);
+            return id;
+        }
+
 
         public override void Execute(AbstractInventoryOperation operation, [CanBeNull] Callback callback)
         {
-            // If operation created via this player, then play out that operation
-            if (InventoryOperations.Any(x => x.Id == operation.Id))
+            operation.vmethod_0(delegate (IResult result)
             {
-                base.Execute(InventoryOperations.First(x => x.Id == operation.Id), callback);
-                return;
-            }
+                if (!result.Succeed)
+                {
+                    BepInLogger.LogError(string.Format("[{0}][{5}] {1} - Local operation failed: {2} - {3}\r\nError: {4}", Time.frameCount, ID, operation.Id, operation, result.Error, Name));
+                }
+                callback?.Invoke(result);
 
-            // Debug the operation
-            // 
-            BepInLogger.LogDebug($"{operation}");
+                if (result.Succeed)
+                    SendExecuteOperationToServer(operation);
+            });
 
-            // Create the packet to send to the Server
+        }
+
+
+        /// <summary>
+        /// Create the packet to send to the Server
+        /// </summary>
+        /// <param name="operation"></param>
+        /// <returns></returns>
+        protected virtual void SendExecuteOperationToServer(AbstractInventoryOperation operation)
+        {
+            var itemId = "";
+            var templateId = "";
+            ushort stackObjectsCount = 1;
+
+            byte[] opBytes = null;
             using MemoryStream memoryStream = new();
             using (BinaryWriter binaryWriter = new(memoryStream))
             {
-                var desc = OperationToDescriptorHelpers.FromInventoryOperation(operation, false, false);
+                var desc = OperationToDescriptorHelpers.FromInventoryOperation(operation, toObserver: false);
+                //BepInLogger.LogDebug($"Writing. {desc}");
+                var magOp = desc as MagOperationDescriptor;
+                if (magOp != null)
+                {
+                    desc = magOp.InternalOperationDescriptor;
+                }
+
                 binaryWriter.WritePolymorph(desc);
-                var opBytes = memoryStream.ToArray();
-
-                var itemId = "";
-                var templateId = "";
-                if (operation is MoveInternalOperation moveOperation) 
-                {
-                    itemId = moveOperation.Item.Id;
-                    templateId = moveOperation.Item.TemplateId;
-                }
-                if (operation is MoveInternalOperation1 otherOperation)
-                {
-                    itemId = otherOperation.Item.Id;
-                    templateId = otherOperation.Item.TemplateId;
-                }
-                if (operation is MoveInternalOperation2 throwOperation)
-                {
-                    itemId = throwOperation.Item.Id;
-                    templateId = throwOperation.Item.TemplateId;
-                }
-
-                ItemPlayerPacket itemPlayerPacket = new ItemPlayerPacket(Player.ProfileId, itemId, templateId, "PolymorphInventoryOperation");
-                itemPlayerPacket.OperationBytes = opBytes;
-                itemPlayerPacket.CallbackId = operation.Id;
-                itemPlayerPacket.InventoryId = this.ID;
-
-                BepInLogger.LogDebug($"Operation: {operation.GetType().Name}, IC Name: {this.Name}, {Player.name}");
-
-                var s = itemPlayerPacket.Serialize();
-                GameClient.SendDataToServer(s);
-                InventoryOperations.Add(operation);
+                opBytes = memoryStream.ToArray();
             }
-        }
 
-        public void ReceiveExecute(AbstractInventoryOperation operation, string packetJson)
-        {
-            //BepInLogger.LogInfo($"ReceiveExecute");
-            //BepInLogger.LogInfo($"{packetJson}");
+//#if DEBUG
+//            AbstractDescriptor1 descriptor = null;
+//            using (MemoryStream msTestOutput = new MemoryStream(opBytes))
+//            {
+//                using (BinaryReader binaryReader = new BinaryReader(msTestOutput))
+//                {
+//                    descriptor = binaryReader.ReadPolymorph<AbstractDescriptor1>();
+//                    BepInLogger.LogDebug($"Reading test. {descriptor}");
+//                }
+//            }
+//#endif
 
-            if (operation == null)
-                return;
-
-            BepInLogger.LogDebug($"{operation}");
-
-            var cachedOperation = InventoryOperations.FirstOrDefault(x => x.Id == operation.Id);
-            // Operation created via this player
-            if (cachedOperation != null)
+          
+            if(operation is MoveInternalOperation mio)
             {
-                cachedOperation.vmethod_0((executeResult) =>
-                {
-
-                    //BepInLogger.LogInfo($"operation.vmethod_0 : {executeResult}");
-                    if (executeResult.Succeed)
-                    {
-                        ReflectionHelpers.SetFieldOrPropertyFromInstance<CommandStatus>(cachedOperation, "commandStatus_0", CommandStatus.Succeed);
-                        RaiseInvEvents(cachedOperation, CommandStatus.Succeed);
-                        //cachedOperation.Dispose();
-                    }
-                    else
-                    {
-                        ReflectionHelpers.SetFieldOrPropertyFromInstance<CommandStatus>(cachedOperation, "commandStatus_0", CommandStatus.Failed);
-                    }
-                    cachedOperation.Dispose();
-
-
-                }, false);
+                itemId = mio.Item.Id;
+                templateId = mio.Item.TemplateId;
+                stackObjectsCount = (ushort)mio.Item.StackObjectsCount;
             }
-            // Operation created by another player
-            else
-            {
-                base.Execute(operation, (result) => { });
-            }
+
+
+            PolymorphInventoryOperationPacket itemPlayerPacket = new PolymorphInventoryOperationPacket(Player.ProfileId, itemId, templateId);
+            itemPlayerPacket.OperationBytes = opBytes;
+            itemPlayerPacket.CallbackId = operation.Id;
+            itemPlayerPacket.InventoryId = this.ID;
+            itemPlayerPacket.StackObjectsCount = stackObjectsCount;
             
+
+            BepInLogger.LogDebug($"Operation: {operation.GetType().Name}, IC Name: {this.Name}, {Player.name}");
+
+            GameClient.SendData(itemPlayerPacket.Serialize());
+
+
         }
 
-        void RaiseInvEvents(object operation, CommandStatus status)
+        AbstractInventoryOperation _cachedInternalOperation;
+
+        public override async Task<IResult> LoadMagazine(BulletClass sourceAmmo, MagazineClass magazine, int loadCount, bool ignoreRestrictions)
         {
-            if (operation == null)
-                return;
+            return await base.LoadMagazine(sourceAmmo, magazine, loadCount, true);
 
-            ReflectionHelpers.SetFieldOrPropertyFromInstance<CommandStatus>(operation, "commandStatus_0", status);
+            //NotificationManagerClass.DisplayWarningNotification("SIT: Unsupported feature [LoadMagazine]");
+
+            //return null;
         }
 
-        public void CancelExecute(uint id)
+      
+
+        public override async Task<IResult> UnloadMagazine(MagazineClass magazine)
         {
-            BepInLogger.LogError($"CancelExecute");
-            BepInLogger.LogInfo($"{id}");
-            // If operation created via this player, then cancel that operation
-            var operation = InventoryOperations.FirstOrDefault(x => x.Id == id);
-            if(operation != null)
-            {
-                operation.vmethod_0(delegate (IResult result)
-                {
-                    ReflectionHelpers.SetFieldOrPropertyFromInstance<CommandStatus>(operation, "commandStatus_0", CommandStatus.Succeed);
-                });
-            }
+            //BepInLogger.LogDebug($"Starting UnloadMagazine for magazine {magazine.Id}");
+
+            //PlayerInventoryUnloadMagazinePacket packet = new();
+            //packet.ProfileId = Player.ProfileId;
+            //packet.ItemId = magazine.Id;
+            //GameClient.SendData(packet.Serialize());
+
+            return await base.UnloadMagazine(magazine);
+
+            //NotificationManagerClass.DisplayWarningNotification("SIT: Unsupported feature [UnloadMagazine]");
+
+            //return null;
         }
 
-
-
-        public CoopInventoryController(EFT.Player player, Profile profile, bool examined) : base(player, profile, examined)
+        public override void StopProcesses()
         {
-            BepInLogger = BepInEx.Logging.Logger.CreateLogSource(nameof(CoopInventoryController));
-            Player = player;
-            if (profile.ProfileId.StartsWith("pmc") && !IsDiscardLimitsFine(DiscardLimits))
-                ResetDiscardLimits();
+            BepInLogger.LogDebug($"StopProcesses");
+
+            base.StopProcesses();
+
+            PlayerInventoryStopProcessesPacket packet = new();
+            packet.ProfileId = Player.ProfileId;
+            GameClient.SendData(packet.Serialize());
+
         }
 
-        public override Task<IResult> LoadMagazine(BulletClass sourceAmmo, MagazineClass magazine, int loadCount, bool ignoreRestrictions)
+        public override void ExecuteStop(Operation1 operation)
         {
-            //BepInLogger.LogInfo("LoadMagazine");
-            return base.LoadMagazine(sourceAmmo, magazine, loadCount, ignoreRestrictions);
+            BepInLogger.LogDebug($"ExecuteStop");
+
+            base.ExecuteStop(operation);
         }
 
-        //public override Task<IResult> UnloadMagazine(MagazineClass magazine)
-        //{
-        //    Task<IResult> result;
-
-        //    BepInLogger.LogDebug("UnloadMagazine");
-        //    ItemPlayerPacket unloadMagazinePacket = new(Profile.ProfileId, magazine.Id, magazine.TemplateId, "PlayerInventoryController_UnloadMagazine");
-        //    var serialized = unloadMagazinePacket.Serialize();
-
-        //    GameClient.SendDataToServer(serialized);
-        //    result = base.UnloadMagazine(magazine);
-        //    return result;
-        //}
-
-        //public void ReceiveUnloadMagazineFromServer(ItemPlayerPacket unloadMagazinePacket)
-        //{
-        //    BepInLogger.LogInfo("ReceiveUnloadMagazineFromServer");
-        //    if (ItemFinder.TryFindItem(unloadMagazinePacket.ItemId, out Item magazine))
-        //    {
-        //        base.UnloadMagazine((MagazineClass)magazine);
-
-        //    }
-        //}
 
         public override void ThrowItem(Item item, IEnumerable<ItemsCount> destroyedItems, Callback callback = null, bool downDirection = false)
         {
             base.ThrowItem(item, destroyedItems, callback, downDirection);
+        }
+
+        public override void AddDiscardLimits(Item rootItem, IEnumerable<ItemsCount> destroyedItems)
+        {
+            //base.AddDiscardLimits(rootItem, destroyedItems);
+        }
+
+        public override void SubtractFromDiscardLimits(Item rootItem, IEnumerable<ItemsCount> destroyedItems)
+        {
+            //base.SubtractFromDiscardLimits(rootItem, destroyedItems);
         }
 
         public static bool IsDiscardLimitsFine(Dictionary<string, int> DiscardLimits)
@@ -199,9 +216,6 @@ namespace StayInTarkov.Coop.Controllers.CoopInventory
                 && DiscardLimits.ContainsKey(DogtagComponent.UsecDogtagsTemplate); // Value: 0
         }
 
-
-
-
         // PlayerOwnerInventoryController methods. We should inherit EFT.Player.PlayerInventoryController and override these methods based on EFT.Player.PlayerOwnerInventoryController
 
         public override void CallMalfunctionRepaired(Weapon weapon)
@@ -216,11 +230,17 @@ namespace StayInTarkov.Coop.Controllers.CoopInventory
         private float GetMalfunctionGlowAlphaMultiplier()
         {
             float result = 0.5f;
-            if (Player.HealthController.FindActiveEffect<IEffect21>() != null)
-            {
-                result = 1f;
-            }
+            //if (Player.HealthController.FindActiveEffect<IEffect21>() != null)
+            //{
+            //    result = 1f;
+            //}
             return result;
+        }
+
+        public override bool CheckTransferOwners(Item item, ItemAddress targetAddress, out Error error)
+        {
+            error = null;
+            return true;
         }
     }
 

@@ -1,21 +1,17 @@
-﻿using System;
+﻿using StayInTarkov;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
+using UnityEngine;
 using BindableState = BindableState<Diz.DependencyManager.ELoadState>;
 
-
-/***
- * Full Credit for this patch goes to SPT-Aki team
- * Original Source is found here - https://dev.sp-tarkov.com/SPT-AKI/Modules
- * Paulov. Made changes to have better reflection and less hardcoding
- */
-namespace StayInTarkov
+namespace Aki.Custom.Utils
 {
     public class EasyBundleHelper
     {
-        private const BindingFlags _flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        private const BindingFlags NonPublicInstanceFlags = BindingFlags.Instance | BindingFlags.NonPublic;
         private static readonly FieldInfo _pathField;
         private static readonly FieldInfo _keyWithoutExtensionField;
         private static readonly FieldInfo _bundleLockField;
@@ -31,15 +27,28 @@ namespace StayInTarkov
             _ = nameof(IBundleLock.IsLocked);
             _ = nameof(BindableState.Bind);
 
-            Type = StayInTarkovHelperConstants.EftTypes.Single(x => x.GetMethod("set_SameNameAsset", _flags) != null);
-            StayInTarkovHelperConstants.Logger.LogDebug($"EasyBundleHelper::{Type.FullName}");
-            _pathField = Type.GetField("string_1", _flags);
-            _keyWithoutExtensionField = Type.GetField("string_0", _flags);
-            _bundleLockField = Type.GetFields(_flags).FirstOrDefault(x => x.FieldType == typeof(IBundleLock));
+            Type = StayInTarkovHelperConstants.EftTypes.SingleCustom(x => !x.IsInterface && x.GetProperty("SameNameAsset", StayInTarkovHelperConstants.PublicDeclaredFlags) != null);
+
+            _pathField = Type.GetField("string_1", NonPublicInstanceFlags);
+            _keyWithoutExtensionField = Type.GetField("string_0", NonPublicInstanceFlags);
+            _bundleLockField = Type.GetFields(NonPublicInstanceFlags).FirstOrDefault(x => x.FieldType == typeof(IBundleLock));
             _dependencyKeysProperty = Type.GetProperty("DependencyKeys");
             _keyProperty = Type.GetProperty("Key");
             _loadStateProperty = Type.GetProperty("LoadState");
-            _loadingCoroutineMethod = Type.GetMethods(_flags).Single(x => x.GetParameters().Length == 0 && x.ReturnType == typeof(Task));
+
+            // Function with 0 params and returns task (usually method_0())
+            var possibleMethods = Type.GetMethods(StayInTarkovHelperConstants.PublicDeclaredFlags).Where(x => x.GetParameters().Length == 0 && x.ReturnType == typeof(Task)).ToArray();
+            if (possibleMethods.Length > 1)
+            {
+                throw new Exception($"Unable to find the Loading Coroutine method as there are multiple possible matches: {string.Join(",", possibleMethods.Select(x => x.Name))}");
+            }
+
+            if (possibleMethods.Length == 0)
+            {
+                throw new Exception("Unable to find the Loading Coroutine method as there are no matches");
+            }
+
+            _loadingCoroutineMethod = possibleMethods.Single();
         }
 
         public EasyBundleHelper(object easyBundle)
@@ -95,11 +104,11 @@ namespace StayInTarkov
             }
         }
 
-        public object LoadState
+        public BindableState LoadState
         {
             get
             {
-                return _loadStateProperty.GetValue(_instance);
+                return (BindableState)_loadStateProperty.GetValue(_instance);
             }
             set
             {
@@ -119,9 +128,9 @@ namespace StayInTarkov
             }
         }
 
-        public Task LoadingCoroutine()
+        public Task LoadingCoroutine(Dictionary<string, AssetBundle> bundles)
         {
-            return (Task)_loadingCoroutineMethod.Invoke(_instance, new object[] { });
+            return (Task)_loadingCoroutineMethod.Invoke(_instance, new object[] { bundles });
         }
     }
 }

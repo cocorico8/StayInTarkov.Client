@@ -55,10 +55,24 @@ namespace StayInTarkov.UI
                 : __instance.GetClientBackEndSession().Profile;
 
             var currentHealth = HealthListener.Instance.CurrentHealth;
+
+            // Set PMCs half health for heal screen
+            if (!____raidSettings.IsScav)
+            {
+                HealthListener.HealHalfHealth(HealthListener.Instance.MyHealthController, currentHealth.Health, EBodyPart.Head);
+                HealthListener.HealHalfHealth(HealthListener.Instance.MyHealthController, currentHealth.Health, EBodyPart.Chest);
+                HealthListener.HealHalfHealth(HealthListener.Instance.MyHealthController, currentHealth.Health, EBodyPart.Stomach);
+                HealthListener.HealHalfHealth(HealthListener.Instance.MyHealthController, currentHealth.Health, EBodyPart.LeftArm);
+                HealthListener.HealHalfHealth(HealthListener.Instance.MyHealthController, currentHealth.Health, EBodyPart.RightArm);
+                HealthListener.HealHalfHealth(HealthListener.Instance.MyHealthController, currentHealth.Health, EBodyPart.LeftLeg);
+                HealthListener.HealHalfHealth(HealthListener.Instance.MyHealthController, currentHealth.Health, EBodyPart.RightLeg);
+                currentHealth = HealthListener.Instance.CurrentHealth;
+            }
+
             SaveProfileProgress(result.Value0, profile, currentHealth, ____raidSettings.IsScav);
 
 
-            var coopGC = CoopGameComponent.GetCoopGameComponent();
+            var coopGC = SITGameComponent.GetCoopGameComponent();
             if (coopGC != null)
             {
                 UnityEngine.Object.Destroy(coopGC);
@@ -71,7 +85,7 @@ namespace StayInTarkov.UI
         public static void SaveProfileProgress(ExitStatus exitStatus, Profile profileData, PlayerHealth currentHealth, bool isPlayerScav)
         {
             // "Disconnecting" from your game in Single Player shouldn't result in losing your gear. This is stupid.
-            if (exitStatus == ExitStatus.Left || exitStatus == ExitStatus.MissingInAction)
+            if (exitStatus == ExitStatus.Left)
                 exitStatus = ExitStatus.Runner;
 
             // TODO: Remove uneccessary data

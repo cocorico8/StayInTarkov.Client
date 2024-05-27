@@ -3,6 +3,8 @@ using Aki.Custom.Airdrops.Utils;
 using BepInEx.Logging;
 using Comfort.Common;
 using EFT;
+using EFT.Game.Spawning;
+using EFT.Interactive;
 using StayInTarkov;
 using StayInTarkov.AkiSupport.Airdrops;
 using StayInTarkov.AkiSupport.Airdrops.Models;
@@ -15,7 +17,6 @@ using StayInTarkov.Networking;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-using static GClass1657;
 
 namespace Aki.Custom.Airdrops
 {
@@ -61,7 +62,7 @@ namespace Aki.Custom.Airdrops
             }
 
             // If this is not the server, then this manager will have to wait for the packet to initialize stuff.
-            if (MatchmakerAcceptPatches.IsClient)
+            if (SITMatchmaking.IsClient)
                 return;
 
             // The server will generate stuff ready for the packet
@@ -81,9 +82,12 @@ namespace Aki.Custom.Airdrops
                     AirdropParameters.RandomAirdropPoint,
                     AirdropParameters.DropHeight,
                     AirdropParameters.Config.PlaneVolume,
-                    AirdropParameters.Config.PlaneSpeed);
+                    AirdropParameters.Config.PlaneSpeed,
+                    AirdropParameters.PlaneLookAt);
                 AirdropBox = await AirdropBox.Init(AirdropParameters.Config.CrateFallSpeed);
                 factory = new ItemFactoryUtil();
+                AirdropParameters.PlaneSpawnPoint = airdropPlane.planeServerPosition;
+                AirdropParameters.PlaneLookAt = airdropPlane.planeServerLookAt;
             }
             catch
             {
@@ -102,17 +106,17 @@ namespace Aki.Custom.Airdrops
 
         public IEnumerator SendParamsToClients()
         {
-            if (!MatchmakerAcceptPatches.IsServer)
+            if (!SITMatchmaking.IsServer)
                 yield break;
 
             yield return new WaitForSeconds(AirdropParameters.TimeToStart);
 
             Logger.LogDebug("Sending Airdrop Params");
             var packet = new Dictionary<string, object>();
-            packet.Add("serverId", CoopGameComponent.GetServerId());
+            packet.Add("serverId", SITGameComponent.GetServerId());
             packet.Add("m", "AirdropPacket");
             packet.Add("model", AirdropParameters);
-            AkiBackendCommunication.Instance.SendDataToPool(packet.SITToJson());
+            GameClient.SendData(packet.SITToJson());
 
             yield break;
         }
@@ -123,25 +127,37 @@ namespace Aki.Custom.Airdrops
                 return;
 
             // If we are a client. Wait until the server has sent all the data.
-            if (MatchmakerAcceptPatches.IsClient && (ClientAirdropLootResultModel == null || ClientAirdropConfigModel == null))
+            if (SITMatchmaking.IsClient && (ClientAirdropLootResultModel == null || ClientAirdropConfigModel == null))
                 return;
 
             // If we have all the parameters sent from the Server. Lets build the plane, box, container and loot
-            if (MatchmakerAcceptPatches.IsClient && !ClientLootBuilt)
+            if (SITMatchmaking.IsClient && !ClientLootBuilt)
             {
                 ClientLootBuilt = true;
                 Logger.LogInfo("Client::Building Plane, Box, Factory and Loot.");
 
                 airdropPlane = await AirdropPlane.Init(
-                    AirdropParameters.RandomAirdropPoint,
+                    AirdropParameters.PlaneSpawnPoint,
                     AirdropParameters.DropHeight,
                     AirdropParameters.Config.PlaneVolume,
-                    AirdropParameters.Config.PlaneSpeed);
+                    AirdropParameters.Config.PlaneSpeed,
+                    AirdropParameters.PlaneLookAt);
                 AirdropBox = await AirdropBox.Init(AirdropParameters.Config.CrateFallSpeed);
                 factory = new ItemFactoryUtil();
 
                 factory.BuildContainer(AirdropBox.Container, ClientAirdropConfigModel, ClientAirdropLootResultModel.DropType);
                 factory.AddLoot(AirdropBox.Container, ClientAirdropLootResultModel);
+                if (AirdropBox.Container != null)
+                {
+                    if (SITGameComponent.TryGetCoopGameComponent(out var coopGameComponent))
+                    {
+                        List<WorldInteractiveObject> oldInteractiveObjectList = new List<WorldInteractiveObject>(coopGameComponent.ListOfInteractiveObjects)
+                        {
+                            AirdropBox.Container
+                        };
+                        coopGameComponent.ListOfInteractiveObjects = [.. oldInteractiveObjectList];
+                    }
+                }
             }
 
             if (!ClientLootBuilt)
@@ -150,12 +166,13 @@ namespace Aki.Custom.Airdrops
             if (airdropPlane == null || AirdropBox == null || factory == null)
                 return;
 
-            if (MatchmakerAcceptPatches.IsServer || MatchmakerAcceptPatches.IsSinglePlayer)
+            if (SITMatchmaking.IsServer || SITMatchmaking.IsSinglePlayer)
             {
                 AirdropParameters.Timer += 0.02f;
 
                 if (AirdropParameters.Timer >= AirdropParameters.TimeToStart && !AirdropParameters.PlaneSpawned)
                 {
+                    SendParamsToClients();
                     StartPlane();
                 }
 
@@ -217,20 +234,20 @@ namespace Aki.Custom.Airdrops
 
         private void BuildLootContainer(AirdropConfigModel config)
         {
-            if (MatchmakerAcceptPatches.IsClient)
+            if (SITMatchmaking.IsClient)
                 return;
 
             var lootData = factory.GetLoot();
 
             // Get the lootData. Sent to Clients.
-            if (MatchmakerAcceptPatches.IsServer)
+            if (SITMatchmaking.IsServer)
             {
                 var packet = new Dictionary<string, object>();
-                packet.Add("serverId", CoopGameComponent.GetServerId());
+                packet.Add("serverId", SITGameComponent.GetServerId());
                 packet.Add("m", "AirdropLootPacket");
                 packet.Add("config", config);
                 packet.Add("result", lootData);
-                AkiBackendCommunication.Instance.SendDataToPool(packet.SITToJson());
+                GameClient.SendData(packet.SITToJson());
             }
 
             if (lootData == null)
@@ -239,6 +256,17 @@ namespace Aki.Custom.Airdrops
             factory.BuildContainer(AirdropBox.Container, config, lootData.DropType);
             factory.AddLoot(AirdropBox.Container, lootData);
             ClientLootBuilt = true;
+            if (AirdropBox.Container != null)
+            {
+                if (SITGameComponent.TryGetCoopGameComponent(out var coopGameComponent))
+                {
+                    List<WorldInteractiveObject> oldInteractiveObjectList = new List<WorldInteractiveObject>(coopGameComponent.ListOfInteractiveObjects)
+                    {
+                        AirdropBox.Container
+                    };
+                    coopGameComponent.ListOfInteractiveObjects = [.. oldInteractiveObjectList];
+                }
+            }
         }
 
         public void ReceiveBuildLootContainer(AirdropLootResultModel lootData, AirdropConfigModel config)

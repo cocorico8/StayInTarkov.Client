@@ -48,13 +48,13 @@ namespace StayInTarkov.Coop.World
             Dictionary<string, object> packet = new()
             {
                 { "t", DateTime.Now.Ticks.ToString("G") },
-                { "serverId", CoopGameComponent.GetServerId() },
+                { "serverId", SITGameComponent.GetServerId() },
                 { "m", MethodName },
                 { "lootableContainerId", __instance.Id },
                 { "type", interactionResult.InteractionType.ToString() }
             };
 
-            AkiBackendCommunication.Instance.PostDownWebSocketImmediately(packet);
+            GameClient.SendData(packet.ToJson());
         }
 
         public static void Replicated(Dictionary<string, object> packet)
@@ -64,7 +64,7 @@ namespace StayInTarkov.Coop.World
 
             if (Enum.TryParse(packet["type"].ToString(), out EInteractionType interactionType))
             {
-                CoopGameComponent coopGameComponent = CoopGameComponent.GetCoopGameComponent();
+                SITGameComponent coopGameComponent = SITGameComponent.GetCoopGameComponent();
                 LootableContainer lootableContainer = coopGameComponent.ListOfInteractiveObjects.FirstOrDefault(x => x.Id == packet["lootableContainerId"].ToString()) as LootableContainer;
 
                 if (lootableContainer != null)

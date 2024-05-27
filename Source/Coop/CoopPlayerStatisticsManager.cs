@@ -22,7 +22,7 @@ namespace StayInTarkov.Coop
         {
             Profile_0 = profile;
             IHealthController_0 = healthController;
-            NotificationManagerClass.DisplayMessageNotification($"{nameof(CoopPlayerStatisticsManager)}{nameof(Init)}");
+            //NotificationManagerClass.DisplayMessageNotification($"{nameof(CoopPlayerStatisticsManager)}{nameof(Init)}");
             Logger.LogInfo($"{nameof(CoopPlayerStatisticsManager)}:{nameof(Init)}");
 
         }
@@ -32,7 +32,6 @@ namespace StayInTarkov.Coop
             Logger.LogInfo($"{nameof(CoopPlayerStatisticsManager)}:{nameof(BeginStatisticsSession)}");
 
             //Logger.LogDebug(Profile_0.ToJson());
-            player_0.OnSpecialPlaceVisited += OnSpecialPlaceVisited;
 
             base.BeginStatisticsSession();
             //if (coroutine_0 != null)
@@ -81,42 +80,12 @@ namespace StayInTarkov.Coop
             //StartDamageHistory();
         }
 
-        private void OnSpecialPlaceVisited(string arg1, int arg2)
-        {
-            Logger.LogInfo($"{nameof(CoopPlayerStatisticsManager)}:{nameof(OnSpecialPlaceVisited)}");
-            if(Profile_0 == null)
-            {
-                Logger.LogError($"${nameof(Profile_0)} is Null");
-                return;
-            }
-
-            if (Profile_0.EftStats == null)
-            {
-                Logger.LogError($"${nameof(Profile_0.EftStats)} is Null");
-                return;
-            }
-
-            if (Profile_0.EftStats.OverallCounters == null)
-            {
-                Logger.LogError($"${nameof(Profile_0.EftStats.OverallCounters)} is Null");
-                return;
-            }
-
-            OverallAccountStats overallCounters = base.Profile_0.EftStats.OverallCounters;
-
-            if (GClass1350_0 == null)
-            {
-                Logger.LogError($"${nameof(GClass1350_0)} is Null");
-                return;
-            }
-        }
-
         public override void ExperienceGained(float experience)
         {
-            if (experience > 0)
-            {
-                NotificationManagerClass.DisplayMessageNotification(experience.ToString());
-            }
+            //if (experience > 0)
+            //{
+            //    NotificationManagerClass.DisplayMessageNotification(experience.ToString());
+            //}
             base.ExperienceGained(experience);
         }
 
@@ -124,7 +93,7 @@ namespace StayInTarkov.Coop
         {
             if (value > 0)
             {
-                NotificationManagerClass.DisplayNotification(new AbstractNotification46(localizationKey1, localizationKey2, value));
+                NotificationManagerClass.DisplayNotification(new LocalizedNotification(localizationKey1, localizationKey2, value));
             }
         }
     }

@@ -11,8 +11,6 @@ namespace StayInTarkov.Coop.Matchmaker
 {
     public class MatchmakerAcceptScreenShowPatch : ModulePatch
     {
-        static BindingFlags privateFlags = BindingFlags.NonPublic | BindingFlags.Instance;
-
         public static Type GetThisType()
         {
             return StayInTarkovHelperConstants.EftTypes
@@ -24,7 +22,7 @@ namespace StayInTarkov.Coop.Matchmaker
 
             var methodName = "Show";
 
-            return GetThisType().GetMethods(privateFlags)
+            return GetThisType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
                 .First(x => x.Name == methodName && x.GetParameters()[0].Name == "session");
 
         }
@@ -48,6 +46,10 @@ namespace StayInTarkov.Coop.Matchmaker
 
             if (MatchmakerObject == null)
                 MatchmakerObject = new GameObject("MatchmakerObject");
+            
+            // Raid Mode needs to be local for Scav raids
+            if (raidSettings.Side == ESideType.Savage)
+                raidSettings.RaidMode = ERaidMode.Local;
 
             var sitMatchMaker = MatchmakerObject.GetOrAddComponent<SITMatchmakerGUIComponent>();
             sitMatchMaker.Profile = ___profile_0;
@@ -98,9 +100,9 @@ namespace StayInTarkov.Coop.Matchmaker
 
             // ------------------------------------------
             // Keep an instance for other patches to work
-            MatchmakerAcceptPatches.MatchMakerAcceptScreenInstance = __instance;
+            SITMatchmaking.MatchMakerAcceptScreenInstance = __instance;
             // ------------------------------------------
-            MatchmakerAcceptPatches.Profile = ___profile_0;
+            SITMatchmaking.Profile = ___profile_0;
         }
     }
 

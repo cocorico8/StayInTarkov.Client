@@ -3,7 +3,7 @@ using Comfort.Common;
 using EFT;
 using FilesChecker;
 using Newtonsoft.Json;
-using StayInTarkov.Coop;
+using StayInTarkov.Coop.SITGameModes;
 using StayInTarkov.EssentialPatches;
 using StayInTarkov.UI;
 using System;
@@ -22,6 +22,11 @@ namespace StayInTarkov
     public static class StayInTarkovHelperConstants
     {
         public static BindingFlags PrivateFlags { get; } = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+        public static BindingFlags PublicDeclaredFlags { get; } = BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly;
+        
+        public static Type SessionInterfaceType { get; private set; }
+        public static Type BackendProfileInterfaceType => EftTypes.SingleCustom(x => x.GetMethods().Length == 2 && x.GetMethods().Select(y => y.Name).Contains("get_Profile") && x.IsInterface);
+        public static Type BackendProfilePetInterfaceType { get; private set; }
 
         private static Type[] _eftTypes;
         public static Type[] EftTypes
@@ -185,7 +190,7 @@ namespace StayInTarkov
                 ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
                 Error = (serializer, err) =>
                 {
-                    Logger.LogError(err.ErrorContext.Error.ToString());
+                    Logger.LogError($"JsonSerializer.Error {err.ErrorContext.Error}");
                 }
             };
         }
@@ -231,7 +236,7 @@ namespace StayInTarkov
             }
             catch (Exception ex)
             {
-                Logger?.LogError(nameof(TrySITParseJson) + ": has filed to Parse Json");
+                Logger?.LogError(nameof(TrySITParseJson) + ": has failed to Parse Json");
                 Logger?.LogError(nameof(TrySITParseJson) + ": " + str);
                 Logger?.LogError(nameof(TrySITParseJson) + ": " + ex);
                 result = default(T);
@@ -247,6 +252,33 @@ namespace StayInTarkov
         public static TarkovApplication GetMainApp()
         {
             return GetClientApp() as TarkovApplication;
+        }
+        
+        public static T SingleCustom<T>(this IEnumerable<T> types, Func<T, bool> predicate) where T : MemberInfo
+        {
+            if (types == null)
+            {
+                throw new ArgumentNullException(nameof(types));
+            }
+
+            if (predicate == null)
+            {
+                throw new ArgumentNullException(nameof(predicate));
+            }
+
+            var matchingTypes = types.Where(predicate).ToArray();
+
+            if (matchingTypes.Length > 1)
+            {
+                throw new InvalidOperationException($"More than one member matches the specified search pattern: {string.Join(", ", matchingTypes.Select(t => t.Name))}");
+            }
+
+            if (matchingTypes.Length == 0)
+            {
+                throw new InvalidOperationException("No members match the specified search pattern");
+            }
+
+            return matchingTypes[0];
         }
 
         static StayInTarkovHelperConstants()
@@ -264,6 +296,10 @@ namespace StayInTarkov
                .First(t => t.GetField("Converters", BindingFlags.Static | BindingFlags.Public) != null);
             JsonConverterDefault = JsonConverterType.GetField("Converters", BindingFlags.Static | BindingFlags.Public).GetValue(null) as JsonConverter[];
             Logger.LogInfo($"PatchConstants: {JsonConverterDefault.Length} JsonConverters found");
+            SessionInterfaceType = EftTypes.Single(x => x.GetMethods().Select(y => y.Name).Contains("GetPhpSessionId") && x.IsInterface);
+            //BackendSessionInterfaceType = EftTypes.Single(x => x.GetMethods().Select(y => y.Name).Contains("ChangeProfileStatus") && x.IsInterface);
+            BackendProfilePetInterfaceType = EftTypes.Single(x => x.GetMethods().Select(y => y.Name).Contains("ReadEncyclopedia") && x.IsInterface);
+            //BackendProfileInterfaceType = EftTypes.SingleCustom(x => x.GetMethods().Length == 2 && x.GetMethods().Select(y => y.Name).Contains("get_Profile") && x.IsInterface);
 
         }
     }

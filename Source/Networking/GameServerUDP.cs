@@ -1,22 +1,19 @@
 ﻿using BepInEx.Logging;
 using Comfort.Common;
 using EFT;
-using EFT.Weather;
 using LiteNetLib;
 using LiteNetLib.Utils;
 using StayInTarkov.Configuration;
 using StayInTarkov.Coop;
 using StayInTarkov.Coop.Components.CoopGameComponents;
-using StayInTarkov.Coop.NetworkPacket;
+using StayInTarkov.Coop.Matchmaker;
 using StayInTarkov.Coop.Players;
-
-//using StayInTarkov.Coop.Players;
-//using StayInTarkov.Networking.Packets;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
+using System.Linq.Expressions;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using UnityEngine;
 using static StayInTarkov.Networking.SITSerialization;
 
@@ -29,13 +26,14 @@ namespace StayInTarkov.Networking
 {
     public class GameServerUDP : MonoBehaviour, INetEventListener, INetLogger
     {
+        public NatHelper _natHelper;
         private LiteNetLib.NetManager _netServer;
         public NetPacketProcessor _packetProcessor = new();
         private NetDataWriter _dataWriter = new();
         public CoopPlayer MyPlayer => Singleton<GameWorld>.Instance.MainPlayer as CoopPlayer;
         public ConcurrentDictionary<string, CoopPlayer> Players => CoopGameComponent.Players;
         public List<string> PlayersMissing = [];
-        private CoopGameComponent CoopGameComponent { get; set; }
+        private SITGameComponent CoopGameComponent { get; set; }
         public LiteNetLib.NetManager NetServer
         {
             get
@@ -48,11 +46,11 @@ namespace StayInTarkov.Networking
 
         void Awake()
         {
-            CoopGameComponent = CoopPatches.CoopGameComponentParent.GetComponent<CoopGameComponent>();
+            CoopGameComponent = CoopPatches.CoopGameComponentParent.GetComponent<SITGameComponent>();
             Logger = BepInEx.Logging.Logger.CreateLogSource(nameof(GameServerUDP));
         }
 
-        public void Start()
+        public async void Start()
         {
             NetDebug.Logger = this;
 
@@ -69,6 +67,7 @@ namespace StayInTarkov.Networking
             //_packetProcessor.SubscribeNetSerializable<CommonPlayerPacket, NetPeer>(OnCommonPlayerPacketReceived);
             //_packetProcessor.SubscribeNetSerializable<AllCharacterRequestPacket, NetPeer>(OnAllCharacterRequestPacketReceived);
             //_packetProcessor.SubscribeNetSerializable<InformationPacket, NetPeer>(OnInformationPacketReceived);
+            //_packetProcessor.SubscribeNetSerializable<PlayerProceedPacket, NetPeer>(OnPlayerProceedPacket);
 
             _netServer = new LiteNetLib.NetManager(this)
             {
@@ -77,18 +76,83 @@ namespace StayInTarkov.Networking
                 AutoRecycle = true,
                 IPv6Enabled = false,
                 EnableStatistics = true,
-                NatPunchEnabled = true
+                NatPunchEnabled = false
             };
 
-            _netServer.Start(
-                PluginConfigSettings.Instance.CoopSettings.SITUDPHostIPV4
-                , PluginConfigSettings.Instance.CoopSettings.SITUDPHostIPV6
-                , PluginConfigSettings.Instance.CoopSettings.SITUDPPort);
+            // ===============================================================
+            // HERE BE DRAGONS.
+            // Make sure you understand NAT punching, UPnP and port-forwarding
+            // if you plan on changing this code
+            // ===============================================================
 
-            Logger.LogDebug($"Server started on port {_netServer.LocalPort}.");
-            EFT.UI.ConsoleScreen.Log($"Server started on port {_netServer.LocalPort}.");
-            //NotificationManagerClass.DisplayMessageNotification($"Server started on port {_netServer.LocalPort}.",
-            //    EFT.Communications.ENotificationDurationType.Default, EFT.Communications.ENotificationIconType.EntryPoint);
+            var localPort = PluginConfigSettings.Instance.CoopSettings.UdpServerLocalPort;
+
+            var msg = $"Connecting to NAT Helper...";
+            EFT.UI.ConsoleScreen.Log(msg);
+            Logger.LogDebug(msg);
+
+            _natHelper = new NatHelper(_netServer, SITMatchmaking.Profile.ProfileId);
+            _natHelper.Connect();
+
+            msg = $"Setting up Public Endpoints...";
+            EFT.UI.ConsoleScreen.Log(msg);
+            Logger.LogInfo(msg);
+
+            // Use explicitly set ip/port if possible, otherwise use UPnP, then STUN, then 3rd-party
+            if (!string.IsNullOrWhiteSpace(SITMatchmaking.PublicIPAddress) && SITMatchmaking.PublicPort != 0)
+            {
+                // Port forwarding
+                _natHelper.AddEndPoint("explicit", SITMatchmaking.PublicIPAddress, SITMatchmaking.PublicPort);
+            }
+            else
+            {
+                // UPnP
+                var upnpResult = await _natHelper.AddUpnpEndPoint(localPort, SITMatchmaking.PublicPort, 900, "sit udp");
+
+                // Only do STUN (nat punch) if UPnP failed
+                if (!upnpResult)
+                {
+                    _natHelper.AddStunEndPoint(ref localPort);
+                }
+            }
+
+            if (_natHelper.PublicEndPoints.IsNullOrEmpty())
+            {
+                var errmsg = $"Could not find any available public endpoints, please set one explicitly in your config.";
+                Logger.LogError(errmsg);
+                EFT.UI.ConsoleScreen.LogError(errmsg);
+                NotificationManagerClass.DisplayMessageNotification(errmsg,
+                    EFT.Communications.ENotificationDurationType.Long, EFT.Communications.ENotificationIconType.Alert);
+                return;
+            }
+
+            // Listen locally
+            var localIPv4 = IPAddress.Parse(PluginConfigSettings.Instance.CoopSettings.UdpServerLocalIPv4);
+            var localIPv6 = IPAddress.Parse(PluginConfigSettings.Instance.CoopSettings.UdpServerLocalIPv6);
+            _netServer.Start(localIPv4, localIPv6, localPort);
+
+            msg = $"Server listening on {localIPv4}:{_netServer.LocalPort} and [{localIPv6}]:{_netServer.LocalPort}.";
+            Logger.LogInfo(msg);
+            EFT.UI.ConsoleScreen.Log(msg);
+            NotificationManagerClass.DisplayMessageNotification(msg,
+                EFT.Communications.ENotificationDurationType.Default, EFT.Communications.ENotificationIconType.EntryPoint);
+
+            msg = $"Registered endpoints ${string.Join("\n", _natHelper.PublicEndPoints)}";
+            Logger.LogInfo(msg);
+            EFT.UI.ConsoleScreen.Log(msg);
+        }
+
+        //private void OnPlayerProceedPacket(PlayerProceedPacket packet, NetPeer peer)
+        //{
+        //    Logger.LogInfo("[Server] OnPlayerProceedPacket");
+        //    Logger.LogInfo(packet.ToJson());
+        //}
+
+        void INetEventListener.OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod)
+        {
+            //Logger.LogInfo("[Server] OnNetworkReceive");
+            var bytes = reader.GetRemainingBytes();
+            _netServer.SendToAll(bytes, deliveryMethod);
         }
 
         //private void OnInformationPacketReceived(InformationPacket packet, NetPeer peer)
@@ -101,6 +165,7 @@ namespace StayInTarkov.Networking
         //    _dataWriter.Reset();
         //    SendDataToPeer(peer, _dataWriter, ref respondPackage, DeliveryMethod.ReliableUnordered);
         //}
+
         //private void OnAllCharacterRequestPacketReceived(AllCharacterRequestPacket packet, NetPeer peer)
         //{
         //    // This method needs to be refined. For some reason the ping-pong has to be run twice for it to work on the host?
@@ -146,7 +211,7 @@ namespace StayInTarkov.Networking
         //            if (!CoopGameComponent.PlayersToSpawnProfiles.ContainsKey(packet.PlayerInfo.Profile.ProfileId))
         //                CoopGameComponent.PlayersToSpawnProfiles.Add(packet.PlayerInfo.Profile.ProfileId, packet.PlayerInfo.Profile);
 
-        //            CoopGameComponent.QueueProfile(packet.PlayerInfo.Profile, new Vector3(packet.Position.x, packet.Position.y + 0.5f, packet.Position.y), packet.IsAlive);
+        //            //CoopGameComponent.QueueProfile(packet.PlayerInfo.Profile, new Vector3(packet.Position.x, packet.Position.y + 0.5f, packet.Position.y), packet.IsAlive);
         //            PlayersMissing.Remove(packet.ProfileId);
         //        }
         //    }
@@ -159,13 +224,13 @@ namespace StayInTarkov.Networking
         //    _dataWriter.Reset();
         //    SendDataToAll(_dataWriter, ref packet, DeliveryMethod.ReliableOrdered, peer);
 
-        //    var playerToApply = Players[packet.ProfileId];
+        //    var playerToApply = Players[packet.ProfileId] as CoopPlayerClient;
         //    if (playerToApply != default && playerToApply != null)
         //    {
-        //        playerToApply.CommonPlayerPackets.Enqueue(packet);
+        //        //playerToApply.CommonPlayerPackets.Enqueue(packet);
         //    }
         //}
-        //private void OnInventoryPacketReceived(InventoryPacket packet, NetPeer peer)
+        //private void OnInventoryPacketReceived(ItemPlayerPacket packet, NetPeer peer)
         //{
         //    if (!Players.ContainsKey(packet.ProfileId))
         //        return;
@@ -173,10 +238,10 @@ namespace StayInTarkov.Networking
         //    _dataWriter.Reset();
         //    SendDataToAll(_dataWriter, ref packet, DeliveryMethod.ReliableOrdered, peer);
 
-        //    var playerToApply = Players[packet.ProfileId];
+        //    var playerToApply = Players[packet.ProfileId] as CoopPlayerClient;
         //    if (playerToApply != default && playerToApply != null)
         //    {
-        //        playerToApply.InventoryPackets.Enqueue(packet);
+        //        //playerToApply.InventoryPackets.Enqueue(packet);
         //    }
         //}
         //private void OnHealthPacketReceived(HealthPacket packet, NetPeer peer)
@@ -187,10 +252,10 @@ namespace StayInTarkov.Networking
         //    _dataWriter.Reset();
         //    SendDataToAll(_dataWriter, ref packet, DeliveryMethod.ReliableOrdered, peer);
 
-        //    var playerToApply = Players[packet.ProfileId];
+        //    var playerToApply = Players[packet.ProfileId] as CoopPlayerClient;
         //    if (playerToApply != default && playerToApply != null)
         //    {
-        //        playerToApply.HealthPackets.Enqueue(packet);
+        //        //playerToApply.HealthPackets.Enqueue(packet);
         //    }
         //}
         //private void OnWeaponPacketReceived(WeaponPacket packet, NetPeer peer)
@@ -201,10 +266,10 @@ namespace StayInTarkov.Networking
         //    _dataWriter.Reset();
         //    SendDataToAll(_dataWriter, ref packet, DeliveryMethod.ReliableOrdered, peer);
 
-        //    var playerToApply = Players[packet.ProfileId];
+        //    var playerToApply = Players[packet.ProfileId] as CoopPlayerClient;
         //    if (playerToApply != default && playerToApply != null && !playerToApply.IsYourPlayer)
         //    {
-        //        playerToApply.FirearmPackets.Enqueue(packet);
+        //        //playerToApply.FirearmPackets.Enqueue(packet);
         //    }
         //}
         //private void OnWeatherPacketReceived(WeatherPacket packet, NetPeer peer)
@@ -253,15 +318,19 @@ namespace StayInTarkov.Networking
         //        EFT.UI.ConsoleScreen.Log("OnGameTimerPacketReceived: Game was null!");
         //    }
         //}
+
         //private void OnPlayerStatePacketReceived(PlayerStatePacket packet, NetPeer peer)
         //{
+
+        //    Logger.LogInfo($"{nameof(OnPlayerStatePacketReceived)}");
+
         //    if (!Players.ContainsKey(packet.ProfileId))
         //        return;
 
         //    _dataWriter.Reset();
         //    SendDataToAll(_dataWriter, ref packet, DeliveryMethod.ReliableOrdered, peer);
 
-        //    var playerToApply = Players[packet.ProfileId];
+        //    var playerToApply = Players[packet.ProfileId] as CoopPlayerClient;
         //    if (playerToApply != default && playerToApply != null && !playerToApply.IsYourPlayer)
         //    {
         //        playerToApply.NewState = packet;
@@ -276,8 +345,14 @@ namespace StayInTarkov.Networking
         void OnDestroy()
         {
             NetDebug.Logger = null;
+            
             if (_netServer != null)
                 _netServer.Stop();
+
+            if(_natHelper != null)
+            {
+                _natHelper.Close();
+            }
         }
 
         public void SendDataToAll<T>(NetDataWriter writer, ref T packet, DeliveryMethod deliveryMethod, NetPeer peer = null) where T : INetSerializable
@@ -297,20 +372,22 @@ namespace StayInTarkov.Networking
 
         public void OnPeerConnected(NetPeer peer)
         {
+            EFT.UI.ConsoleScreen.Log($"[SERVER] {nameof(OnPeerConnected)} {peer.EndPoint} connected to server.");
+
             NotificationManagerClass.DisplayMessageNotification($"Peer {peer.EndPoint} connected to server.",
                 EFT.Communications.ENotificationDurationType.Default, EFT.Communications.ENotificationIconType.Friend);
         }
 
         public void OnNetworkError(IPEndPoint endPoint, SocketError socketErrorCode)
         {
-            EFT.UI.ConsoleScreen.Log("[SERVER] error " + socketErrorCode);
+            EFT.UI.ConsoleScreen.LogError("[SERVER] error " + socketErrorCode);
         }
 
         public void OnNetworkReceiveUnconnected(IPEndPoint remoteEndPoint, NetPacketReader reader, UnconnectedMessageType messageType)
         {
-            if (messageType == UnconnectedMessageType.Broadcast)
+            if (messageType == UnconnectedMessageType.Broadcast && reader.GetInt() == 1)
             {
-                EFT.UI.ConsoleScreen.Log("[SERVER] Received discovery request. Send discovery response");
+                EFT.UI.ConsoleScreen.Log($"[SERVER] Received discovery request. Send discovery response to {remoteEndPoint}");
                 NetDataWriter resp = new NetDataWriter();
                 resp.Put(1);
                 _netServer.SendUnconnectedMessage(resp, remoteEndPoint);

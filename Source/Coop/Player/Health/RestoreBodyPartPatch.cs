@@ -1,6 +1,7 @@
 ﻿using EFT.HealthSystem;
 using StayInTarkov.Coop.NetworkPacket;
-using StayInTarkov.Core.Player;
+using StayInTarkov.Coop.NetworkPacket.Player.Health;
+//using StayInTarkov.Core.Player;
 using StayInTarkov.Networking;
 using System;
 using System.Collections.Generic;
@@ -43,11 +44,11 @@ namespace StayInTarkov.Coop.Player.Health
             var player = __instance.Player;
 
             // If it is a client Drone, do not resend the packet again!
-            if (player.TryGetComponent<PlayerReplicatedComponent>(out var prc))
-            {
-                if (prc.IsClientDrone)
-                    return;
-            }
+            //if (player.TryGetComponent<PlayerReplicatedComponent>(out var prc))
+            //{
+            //    if (prc.IsClientDrone)
+            //        return;
+            //}
 
 
             RestoreBodyPartPacket restoreBodyPartPacket = new();
@@ -56,7 +57,7 @@ namespace StayInTarkov.Coop.Player.Health
             restoreBodyPartPacket.HealthPenalty = healthPenalty;
             //var json = restoreBodyPartPacket.ToJson();
             //Logger.LogInfo(json);
-            GameClient.SendDataToServer(restoreBodyPartPacket.Serialize());
+            GameClient.SendData(restoreBodyPartPacket.Serialize());
         }
 
 
@@ -134,22 +135,5 @@ namespace StayInTarkov.Coop.Player.Health
             return null;
         }
 
-        public class RestoreBodyPartPacket : BasePlayerPacket
-        {
-            public string BodyPart { get; set; }
-            public float HealthPenalty { get; set; }
-
-            public RestoreBodyPartPacket() : base()
-            {
-                Method = "RestoreBodyPart";
-            }
-        }
-
-        //protected sealed class BodyPartState
-        //{
-        //    public bool IsDestroyed;
-
-        //    public HealthValue Health;
-        //}
     }
 }

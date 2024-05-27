@@ -4,10 +4,10 @@ using EFT;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using StayInTarkov.Configuration;
-using StayInTarkov.Coop;
 using StayInTarkov.Coop.Components.CoopGameComponents;
 using StayInTarkov.Coop.Matchmaker;
 using StayInTarkov.Coop.NetworkPacket;
+using StayInTarkov.Coop.SITGameModes;
 using StayInTarkov.ThirdParty;
 using System;
 using System.Collections.Concurrent;
@@ -19,6 +19,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.XR;
@@ -27,7 +28,7 @@ namespace StayInTarkov.Networking
 {
     public class AkiBackendCommunication : IDisposable
     {
-        public const int DEFAULT_TIMEOUT_MS = 5000;
+        public const int DEFAULT_TIMEOUT_MS = 9999;
         public const int DEFAULT_TIMEOUT_LONG_MS = 9999;
         public const string PACKET_TAG_METHOD = "m";
         public const string PACKET_TAG_SERVERID = "serverId";
@@ -35,7 +36,7 @@ namespace StayInTarkov.Networking
 
         private string m_Session;
 
-        public string Session
+        public string ProfileId
         {
             get
             {
@@ -55,6 +56,10 @@ namespace StayInTarkov.Networking
                 if (string.IsNullOrEmpty(m_RemoteEndPoint))
                     m_RemoteEndPoint = StayInTarkovHelperConstants.GetBackendUrl();
 
+                // Remove ending slash on URI for SIT.Manager.Avalonia
+                if(m_RemoteEndPoint.EndsWith("/"))
+                    m_RemoteEndPoint = m_RemoteEndPoint.Substring(0, m_RemoteEndPoint.Length - 1);
+
                 return m_RemoteEndPoint;
 
             }
@@ -69,7 +74,7 @@ namespace StayInTarkov.Networking
         {
             get
             {
-                if (m_Instance == null || m_Instance.Session == null || m_Instance.RemoteEndPoint == null)
+                if (m_Instance == null || m_Instance.ProfileId == null || m_Instance.RemoteEndPoint == null)
                     m_Instance = new AkiBackendCommunication();
 
                 return m_Instance;
@@ -82,8 +87,14 @@ namespace StayInTarkov.Networking
 
         public WebSocketSharp.WebSocket WebSocket { get; private set; }
 
+        public long BytesSent = 0;
+        public long BytesReceived = 0;
+        public ushort Ping = 0;
+        public ConcurrentQueue<int> ServerPingSmooth { get; } = new();
+
         public static int PING_LIMIT_HIGH { get; } = 125;
         public static int PING_LIMIT_MID { get; } = 100;
+        public static bool IsLocal;
 
 
         protected AkiBackendCommunication(ManualLogSource logger = null)
@@ -101,10 +112,15 @@ namespace StayInTarkov.Networking
             if (string.IsNullOrEmpty(RemoteEndPoint))
                 RemoteEndPoint = StayInTarkovHelperConstants.GetBackendUrl();
 
+            IsLocal = RemoteEndPoint.Contains("127.0.0.1")
+                    || RemoteEndPoint.Contains("localhost");
+
             GetHeaders();
             ConnectToAkiBackend();
             PeriodicallySendPing();
-            PeriodicallySendPooledData();
+            //PeriodicallySendPooledData();
+
+            SITGameServerClientDataProcessing.OnLatencyUpdated += OnLatencyUpdated;
 
             HttpClient = new HttpClient();
             foreach (var item in GetHeaders())
@@ -115,7 +131,6 @@ namespace StayInTarkov.Networking
             HttpClient.Timeout = new TimeSpan(0, 0, 0, 0, 1000);
 
             HighPingMode = PluginConfigSettings.Instance.CoopSettings.ForceHighPingMode;
-
         }
 
         private void ConnectToAkiBackend()
@@ -157,7 +172,6 @@ namespace StayInTarkov.Networking
             WebSocket.OnError += WebSocket_OnError;
             WebSocket.OnMessage += WebSocket_OnMessage;
             // ---
-
         }
 
         public void WebSocketClose()
@@ -172,12 +186,11 @@ namespace StayInTarkov.Networking
             }
         }
 
-        public async void PostDownWebSocketImmediately(Dictionary<string, object> packet)
+        public async void PingAsync()
         {
             await Task.Run(() =>
             {
-                if (WebSocket != null)
-                    WebSocket.Send(packet.SITToJson());
+                WebSocket?.Ping();
             });
         }
 
@@ -186,14 +199,20 @@ namespace StayInTarkov.Networking
             await Task.Run(() =>
             {
                 if (WebSocket != null)
+                {
+                    Interlocked.Add(ref BytesSent, Encoding.UTF8.GetByteCount(packet));
                     WebSocket.Send(packet);
+                }
             });
         }
 
         public void PostDownWebSocketImmediately(byte[] packet)
         {
             if (WebSocket != null)
+            {
+                Interlocked.Add(ref BytesSent, packet.Length);
                 WebSocket.SendAsync(packet, (b) => { });
+            }
         }
 
         private void WebSocket_OnError(object sender, WebSocketSharp.ErrorEventArgs e)
@@ -218,270 +237,14 @@ namespace StayInTarkov.Networking
 
         private void WebSocket_OnMessage(object sender, WebSocketSharp.MessageEventArgs e)
         {
-            GC.AddMemoryPressure(e.RawData.Length);
-
             if (e == null)
                 return;
 
-            if(DEBUGPACKETS)
-            {
-                Logger.LogDebug(e.Data);
-            }
+            Interlocked.Add(ref BytesReceived, e.RawData.Length);
+            GC.AddMemoryPressure(e.RawData.Length);
 
-            ProcessPacketBytes(e.RawData, e.Data);
+            SITGameServerClientDataProcessing.ProcessPacketBytes(e.RawData, e.Data);
             GC.RemoveMemoryPressure(e.RawData.Length);
-
-        }
-
-        private void ProcessPacketBytes(byte[] data, string sData)
-        {
-            try
-            {
-                if (data == null)
-                {
-                    Logger.LogError($"{nameof(ProcessPacketBytes)}. Data is Null");
-                    return;
-                }
-
-                if (data.Length == 0)
-                {
-                    Logger.LogError($"{nameof(ProcessPacketBytes)}. Data is Empty");
-                    return;
-                }
-
-                Dictionary<string, object> packet = null;
-
-                // Is a dictionary from Spt-Aki
-                if (!string.IsNullOrEmpty(sData) && sData.StartsWith("{"))
-                {
-                    // Use StreamReader & JsonTextReader to improve memory / cpu usage
-                    using (var streamReader = new StreamReader(new MemoryStream(data)))
-                    {
-                        using (var reader = new JsonTextReader(streamReader))
-                        {
-                            var serializer = new JsonSerializer();
-                            packet = serializer.Deserialize<Dictionary<string, object>>(reader);
-                        }
-                    }
-                }
-                // Is a RAW SIT Serialized packet
-                else
-                {
-
-                    //Logger.LogDebug(Encoding.UTF8.GetString(data));
-                    //BasePlayerPacket basePlayerPacket = new BasePlayerPacket();
-                    //packet = basePlayerPacket.ToDictionary(data);
-                    ProcessSITPacket(data, ref packet);
-
-                }
-
-                if (DEBUGPACKETS)
-                {
-                    Logger.LogInfo("GOT :" + sData);
-                }
-
-                var coopGameComponent = CoopGameComponent.GetCoopGameComponent();
-
-                if (coopGameComponent == null)
-                {
-                    Logger.LogError($"{nameof(ProcessPacketBytes)}. coopGameComponent is Null");
-                    return;
-                }
-
-                if (packet == null)
-                {
-                    Logger.LogError($"{nameof(ProcessPacketBytes)}. Packet is Null");
-                    return;
-                }
-
-                if (DEBUGPACKETS)
-                {
-                    Logger.LogInfo("GOT :" + packet.SITToJson());
-                }
-
-                if (packet.ContainsKey("dataList"))
-                {
-                    if (ProcessDataListPacket(ref packet))
-                        return;
-                }
-
-                //Logger.LogDebug($"Step.1. Packet exists. {packet.ToJson()}");
-
-                // If this is a pong packet, resolve and create a smooth ping
-                if (packet.ContainsKey("pong"))
-                {
-                    var pongRaw = long.Parse(packet["pong"].ToString());
-                    var dtPong = new DateTime(pongRaw);
-                    var serverPing = (int)(DateTime.UtcNow - dtPong).TotalMilliseconds;
-                    if (coopGameComponent.ServerPingSmooth.Count > 60)
-                        coopGameComponent.ServerPingSmooth.TryDequeue(out _);
-                    coopGameComponent.ServerPingSmooth.Enqueue(serverPing);
-                    coopGameComponent.ServerPing = coopGameComponent.ServerPingSmooth.Count > 0 ? (int)Math.Round(coopGameComponent.ServerPingSmooth.Average()) : 1;
-                    return;
-                }
-
-                if (packet.ContainsKey("HostPing"))
-                {
-                    var dtHP = new DateTime(long.Parse(packet["HostPing"].ToString()));
-                    var timeSpanOfHostToMe = DateTime.UtcNow - dtHP;
-                    HostPing = (int)Math.Round(timeSpanOfHostToMe.TotalMilliseconds);
-                    return;
-                }
-
-                // Receiving a Player Extracted packet. Process into ExtractedPlayers List
-                if (packet.ContainsKey("Extracted"))
-                {
-                    if (Singleton<ISITGame>.Instantiated && !Singleton<ISITGame>.Instance.ExtractedPlayers.Contains(packet["profileId"].ToString()))
-                    {
-                        Singleton<ISITGame>.Instance.ExtractedPlayers.Add(packet["profileId"].ToString());
-                    }
-                    return;
-                }
-
-                // If this is an endSession packet, end the session for the clients
-                if (packet.ContainsKey("endSession") && MatchmakerAcceptPatches.IsClient)
-                {
-                    Logger.LogDebug("Received EndSession from Server. Ending Game.");
-                    if (coopGameComponent.LocalGameInstance == null)
-                        return;
-
-                    coopGameComponent.ServerHasStopped = true;
-                    return;
-                }
-
-
-
-                // -------------------------------------------------------
-                // Add to the Coop Game Component Action Packets
-                if (coopGameComponent == null || coopGameComponent.ActionPackets == null || coopGameComponent.ActionPacketHandler == null)
-                    return;
-
-
-                if (packet.ContainsKey(PACKET_TAG_METHOD)
-                    && packet[PACKET_TAG_METHOD].ToString() == "Move")
-                    coopGameComponent.ActionPacketHandler.ActionPacketsMovement.TryAdd(packet);
-                else if (packet.ContainsKey(PACKET_TAG_METHOD)
-                    && packet[PACKET_TAG_METHOD].ToString() == "ApplyDamageInfo")
-                {
-                    coopGameComponent.ActionPacketHandler.ActionPacketsDamage.TryAdd(packet);
-                }
-                else
-                    coopGameComponent.ActionPacketHandler.ActionPackets.TryAdd(packet);
-
-            }
-            catch (Exception ex)
-            {
-                Logger.LogError(ex);
-            }
-        }
-
-        private void ProcessSITPacket(byte[] data, ref Dictionary<string, object> packet)
-        {
-            var coopGameComponent = CoopGameComponent.GetCoopGameComponent();
-            if (coopGameComponent == null)
-            {
-                Logger.LogError($"{nameof(ProcessSITPacket)}. coopGameComponent is Null");
-                return;
-            }
-
-            // If the data is empty. Return;
-            if (data == null || data.Length == 0)
-            {
-                Logger.LogError($"{nameof(ProcessSITPacket)}. {nameof(data)} is null");
-            }
-
-            var stringData = Encoding.UTF8.GetString(data);
-            // If the string Data isn't a SIT serialized string. Return;
-            if (!stringData.StartsWith("SIT"))
-            {
-                Logger.LogError($"{nameof(ProcessSITPacket)}. {stringData} does not start with SIT");
-                return;
-            }
-
-            var serverId = stringData.Substring(3, 24);
-            // If the serverId is not the same as the one we are connected to. Return;
-            if (serverId != coopGameComponent.ServerId)
-            {
-                Logger.LogError($"{nameof(ProcessSITPacket)}. {serverId} does not equal {coopGameComponent.ServerId}");
-                return;
-            }
-
-            var bp = new BasePacket("");
-            using (var br = new BinaryReader(new MemoryStream(data)))
-                bp.ReadHeader(br);
-
-            packet = new Dictionary<string, object>();
-            packet[PACKET_TAG_DATA] = data;
-            packet[PACKET_TAG_METHOD] = bp.Method;
-
-            //if(bp.Method == "PolymorphInventoryOperation")
-            //{
-            //    File.WriteAllBytes($"DEBUG_{nameof(ProcessSITPacket)}_{nameof(data)}.bin", data);
-            //}
-
-            //if (packet.ContainsKey(PACKET_TAG_DATA) && packet.ContainsKey(PACKET_TAG_METHOD))
-            //{
-                //Logger.LogInfo(" =============WebSocket_OnMessage========= ");
-                //Logger.LogInfo(" ==================SIT Packet============= ");
-                //Logger.LogInfo(packet.ToJson());
-                //Logger.LogInfo(" ========================================= ");
-                if (!packet.ContainsKey("profileId"))
-                {
-                    var bpp = new BasePlayerPacket("", packet[PACKET_TAG_METHOD].ToString());
-                    bpp.Deserialize(data);
-                    packet.Add("profileId", new string(bpp.ProfileId.ToCharArray()));
-                    bpp.Dispose();
-                    bpp = null;
-                }
-
-                if (DEBUGPACKETS)
-                {
-                    Logger.LogInfo(" ==================SIT Packet============= ");
-                    Logger.LogInfo(packet.ToJson());
-                }
-            //}
-        }
-
-        private bool ProcessDataListPacket(ref Dictionary<string, object> packet)
-        {
-            var coopGC = CoopGameComponent.GetCoopGameComponent();
-            if (coopGC == null)
-                return false;
-
-            if (!packet.ContainsKey("dataList"))
-                return false;
-
-            JArray dataList = JArray.FromObject(packet["dataList"]);
-
-            //Logger.LogDebug(packet.ToJson());   
-
-            foreach (var d in dataList)
-            {
-                // TODO: This needs to be a little more dynamic but for now. This switch will do.
-                // Depending on the method defined, deserialize packet to defined type
-                switch (packet[PACKET_TAG_METHOD].ToString())
-                {
-                    case "PlayerStates":
-                        PlayerStatePacket playerStatePacket = new PlayerStatePacket();
-                        playerStatePacket = (PlayerStatePacket)playerStatePacket.Deserialize((byte[])d);
-                        if (playerStatePacket == null || string.IsNullOrEmpty(playerStatePacket.ProfileId))
-                            continue;
-
-                        if (coopGC.Players.ContainsKey(playerStatePacket.ProfileId))
-                            coopGC.Players[playerStatePacket.ProfileId].ReceivePlayerStatePacket(playerStatePacket);
-
-
-                        var serverPing = (int)(DateTime.UtcNow - new DateTime(long.Parse(packet["t"].ToString()))).TotalMilliseconds;
-                        coopGC.ServerPingSmooth.Enqueue(serverPing);
-
-                        break;
-                    case "Multiple":
-                        break;
-                }
-
-            }
-
-            return true;
         }
 
         public static AkiBackendCommunication GetRequestInstance(bool createInstance = false, ManualLogSource logger = null)
@@ -494,8 +257,6 @@ namespace StayInTarkov.Networking
             return Instance;
         }
 
-        public static bool DEBUGPACKETS { get; } = false;
-
         public bool HighPingMode { get; set; }
 
         public BlockingCollection<byte[]> PooledBytesToPost { get; } = new BlockingCollection<byte[]>();
@@ -504,183 +265,179 @@ namespace StayInTarkov.Networking
 
         public BlockingCollection<KeyValuePair<string, string>> PooledJsonToPostToUrl { get; } = new();
 
-        public void SendDataToPool(string url, string serializedData)
-        {
-            PooledJsonToPostToUrl.Add(new(url, serializedData));
-        }
+        //public void SendDataToPool(string url, string serializedData)
+        //{
+        //    PooledJsonToPostToUrl.Add(new(url, serializedData));
+        //}
 
-        public void SendDataToPool(string serializedData)
-        {
-            if (WebSocket != null && WebSocket.ReadyState == WebSocketSharp.WebSocketState.Open)
-                WebSocket.Send(serializedData);
-        }
+        //public void SendDataToPool(string serializedData)
+        //{
+        //    if (WebSocket != null && WebSocket.ReadyState == WebSocketSharp.WebSocketState.Open)
+        //        WebSocket.Send(serializedData);
+        //}
 
         private HashSet<string> _previousPooledData = new HashSet<string>();
 
-        public void SendDataToPool(byte[] serializedData)
-        {
+        //public void SendDataToPool(byte[] serializedData)
+        //{
 
-            if (DEBUGPACKETS)
-            {
-                Logger.LogDebug(nameof(SendDataToPool));
-                Logger.LogDebug(Encoding.UTF8.GetString(serializedData));
-            }
-            //if (_previousPooledData.Contains(Encoding.UTF8.GetString(serializedData)))
-            //    return;
+        //    if (DEBUGPACKETS)
+        //    {
+        //        Logger.LogDebug(nameof(SendDataToPool));
+        //        Logger.LogDebug(Encoding.UTF8.GetString(serializedData));
+        //    }
+        //    //if (_previousPooledData.Contains(Encoding.UTF8.GetString(serializedData)))
+        //    //    return;
 
-            //_previousPooledData.Add(Encoding.UTF8.GetString(serializedData));   
-            PooledBytesToPost.Add(serializedData);
+        //    //_previousPooledData.Add(Encoding.UTF8.GetString(serializedData));   
+        //    PooledBytesToPost.Add(serializedData);
 
-            //if (HighPingMode)
-            //{
-            //    PooledBytesToPost.Add(serializedData);
-            //}
-            //else
-            //{
-            //    if (WebSocket != null && WebSocket.ReadyState == WebSocketSharp.WebSocketState.Open)
-            //        WebSocket.Send(serializedData);
-            //}
-        }
+        //    //if (HighPingMode)
+        //    //{
+        //    //    PooledBytesToPost.Add(serializedData);
+        //    //}
+        //    //else
+        //    //{
+        //    //    if (WebSocket != null && WebSocket.ReadyState == WebSocketSharp.WebSocketState.Open)
+        //    //        WebSocket.Send(serializedData);
+        //    //}
+        //}
 
-        public void SendDataToPool(string url, Dictionary<string, object> data)
-        {
-            PooledDictionariesToPost.Add(new(url, data));
-        }
+        //public void SendDataToPool(string url, Dictionary<string, object> data)
+        //{
+        //    PooledDictionariesToPost.Add(new(url, data));
+        //}
 
-        public void SendListDataToPool(string url, List<Dictionary<string, object>> data)
-        {
-            PooledDictionaryCollectionToPost.Add(data);
-        }
+        //public void SendListDataToPool(string url, List<Dictionary<string, object>> data)
+        //{
+        //    PooledDictionaryCollectionToPost.Add(data);
+        //}
 
-        public int HostPing { get; private set; } = 1;
-        public int PostPing { get; private set; } = 1;
-        public ConcurrentQueue<int> PostPingSmooth { get; } = new();
+        //private Task PeriodicallySendPooledDataTask;
 
-        private Task PeriodicallySendPooledDataTask;
+        //private void PeriodicallySendPooledData()
+        //{
+        //    //PatchConstants.Logger.LogDebug($"PeriodicallySendPooledData()");
 
-        private void PeriodicallySendPooledData()
-        {
-            //PatchConstants.Logger.LogDebug($"PeriodicallySendPooledData()");
+        //    PeriodicallySendPooledDataTask = Task.Run(async () =>
+        //    {
+        //        int awaitPeriod = 1;
+        //        //GCHelpers.EnableGC();
+        //        //GCHelpers.ClearGarbage();
+        //        //PatchConstants.Logger.LogDebug($"PeriodicallySendPooledData():In Async Task");
 
-            PeriodicallySendPooledDataTask = Task.Run(async () =>
-            {
-                int awaitPeriod = 1;
-                //GCHelpers.EnableGC();
-                //GCHelpers.ClearGarbage();
-                //PatchConstants.Logger.LogDebug($"PeriodicallySendPooledData():In Async Task");
+        //        //while (m_Instance != null)
+        //        Stopwatch swPing = new();
 
-                //while (m_Instance != null)
-                Stopwatch swPing = new();
+        //        while (true)
+        //        {
+        //            if (WebSocket == null)
+        //            {
+        //                await Task.Delay(awaitPeriod);
+        //                continue;
+        //            }
 
-                while (true)
-                {
-                    if (WebSocket == null)
-                    {
-                        await Task.Delay(awaitPeriod);
-                        continue;
-                    }
+        //            // If there is nothing to post. Then delay 1ms (to avoid mem leak) and continue.
+        //            if
+        //            (
+        //                !PooledBytesToPost.Any()
+        //                && !PooledDictionariesToPost.Any()
+        //                && !PooledDictionaryCollectionToPost.Any()
+        //                && !PooledJsonToPostToUrl.Any()
+        //            )
+        //            {
+        //                swPing.Restart();
+        //                await Task.Delay(awaitPeriod);
+        //                continue;
+        //            }
 
-                    // If there is nothing to post. Then delay 1ms (to avoid mem leak) and continue.
-                    if
-                    (
-                        !PooledBytesToPost.Any()
-                        && !PooledDictionariesToPost.Any()
-                        && !PooledDictionaryCollectionToPost.Any()
-                        && !PooledJsonToPostToUrl.Any()
-                    )
-                    {
-                        swPing.Restart();
-                        await Task.Delay(awaitPeriod);
-                        continue;
-                    }
+        //            // This would the most common delivery from the Client
+        //            // Pooled up bytes will now send to the Web Socket
+        //            while (PooledBytesToPost.Any())
+        //            {
+        //                //await Task.Delay(awaitPeriod);
+        //                if (WebSocket != null)
+        //                {
+        //                    if (WebSocket.ReadyState == WebSocketSharp.WebSocketState.Open)
+        //                    {
+        //                        while (PooledBytesToPost.TryTake(out var bytes))
+        //                        {
+        //                            //Logger.LogDebug($"Sending bytes of {bytes.Length}b in length");
+        //                            if (DEBUGPACKETS)
+        //                            {
+        //                                Logger.LogDebug($"SENT:{Encoding.UTF8.GetString(bytes)}");
+        //                            }
 
-                    // This would the most common delivery from the Client
-                    // Pooled up bytes will now send to the Web Socket
-                    while (PooledBytesToPost.Any())
-                    {
-                        //await Task.Delay(awaitPeriod);
-                        if (WebSocket != null)
-                        {
-                            if (WebSocket.ReadyState == WebSocketSharp.WebSocketState.Open)
-                            {
-                                while (PooledBytesToPost.TryTake(out var bytes))
-                                {
-                                    //Logger.LogDebug($"Sending bytes of {bytes.Length}b in length");
-                                    if (DEBUGPACKETS)
-                                    {
-                                        Logger.LogDebug($"SENT:{Encoding.UTF8.GetString(bytes)}");
-                                    }
+        //                            WebSocket.Send(bytes);
+        //                        }
+        //                    }
+        //                    else
+        //                    {
+        //                        WebSocket_OnError();
+        //                    }
+        //                }
+        //            }
+        //            //await Task.Delay(100);
+        //            while (PooledDictionariesToPost.Any())
+        //            {
+        //                await Task.Delay(awaitPeriod);
 
-                                    WebSocket.Send(bytes);
-                                }
-                            }
-                            else
-                            {
-                                WebSocket_OnError();
-                            }
-                        }
-                    }
-                    //await Task.Delay(100);
-                    while (PooledDictionariesToPost.Any())
-                    {
-                        await Task.Delay(awaitPeriod);
+        //                KeyValuePair<string, Dictionary<string, object>> d;
+        //                if (PooledDictionariesToPost.TryTake(out d))
+        //                {
 
-                        KeyValuePair<string, Dictionary<string, object>> d;
-                        if (PooledDictionariesToPost.TryTake(out d))
-                        {
+        //                    var url = d.Key;
+        //                    var json = JsonConvert.SerializeObject(d.Value);
+        //                    //var json = d.Value.ToJson();
+        //                    if (WebSocket != null)
+        //                    {
+        //                        if (WebSocket.ReadyState == WebSocketSharp.WebSocketState.Open)
+        //                        {
+        //                            WebSocket.Send(json);
+        //                        }
+        //                        else
+        //                        {
+        //                            WebSocket_OnError();
+        //                        }
+        //                    }
+        //                }
+        //            }
 
-                            var url = d.Key;
-                            var json = JsonConvert.SerializeObject(d.Value);
-                            //var json = d.Value.ToJson();
-                            if (WebSocket != null)
-                            {
-                                if (WebSocket.ReadyState == WebSocketSharp.WebSocketState.Open)
-                                {
-                                    WebSocket.Send(json);
-                                }
-                                else
-                                {
-                                    WebSocket_OnError();
-                                }
-                            }
-                        }
-                    }
+        //            if (PooledDictionaryCollectionToPost.TryTake(out var d2))
+        //            {
+        //                var json = JsonConvert.SerializeObject(d2);
+        //                if (WebSocket != null)
+        //                {
+        //                    if (WebSocket.ReadyState == WebSocketSharp.WebSocketState.Open)
+        //                    {
+        //                        WebSocket.Send(json);
+        //                    }
+        //                    else
+        //                    {
+        //                        StayInTarkovHelperConstants.Logger.LogError($"WS:Periodic Send:PooledDictionaryCollectionToPost:Failed!");
+        //                    }
+        //                }
+        //                json = null;
+        //            }
 
-                    if (PooledDictionaryCollectionToPost.TryTake(out var d2))
-                    {
-                        var json = JsonConvert.SerializeObject(d2);
-                        if (WebSocket != null)
-                        {
-                            if (WebSocket.ReadyState == WebSocketSharp.WebSocketState.Open)
-                            {
-                                WebSocket.Send(json);
-                            }
-                            else
-                            {
-                                StayInTarkovHelperConstants.Logger.LogError($"WS:Periodic Send:PooledDictionaryCollectionToPost:Failed!");
-                            }
-                        }
-                        json = null;
-                    }
+        //            while (PooledJsonToPostToUrl.Any())
+        //            {
+        //                await Task.Delay(awaitPeriod);
 
-                    while (PooledJsonToPostToUrl.Any())
-                    {
-                        await Task.Delay(awaitPeriod);
+        //                if (PooledJsonToPostToUrl.TryTake(out var kvp))
+        //                {
+        //                    _ = await PostJsonAsync(kvp.Key, kvp.Value, timeout: 1000, debug: true);
+        //                }
+        //            }
 
-                        if (PooledJsonToPostToUrl.TryTake(out var kvp))
-                        {
-                            _ = await PostJsonAsync(kvp.Key, kvp.Value, timeout: 1000, debug: true);
-                        }
-                    }
+        //            if (PostPingSmooth.Any() && PostPingSmooth.Count > 30)
+        //                PostPingSmooth.TryDequeue(out _);
 
-                    if (PostPingSmooth.Any() && PostPingSmooth.Count > 30)
-                        PostPingSmooth.TryDequeue(out _);
-
-                    PostPingSmooth.Enqueue((int)swPing.ElapsedMilliseconds - awaitPeriod);
-                    PostPing = (int)Math.Round(PostPingSmooth.Average());
-                }
-            });
-        }
+        //            PostPingSmooth.Enqueue((int)swPing.ElapsedMilliseconds - awaitPeriod);
+        //            PostPing = (int)Math.Round(PostPingSmooth.Average());
+        //        }
+        //    });
+        //}
 
         private Task PeriodicallySendPingTask { get; set; }
 
@@ -691,31 +448,43 @@ namespace StayInTarkov.Networking
                 int awaitPeriod = 2000;
                 while (true)
                 {
-                    await Task.Delay(awaitPeriod);
-
-                    if (WebSocket == null)
-                        continue;
-
-                    if (WebSocket.ReadyState != WebSocketSharp.WebSocketState.Open)
-                        continue;
-
-                    if (!CoopGameComponent.TryGetCoopGameComponent(out var coopGameComponent))
-                        continue;
-
-                    // PatchConstants.Logger.LogDebug($"WS:Ping Send");
-
-                    var packet = new
+                    try
                     {
-                        m = "Ping",
-                        t = DateTime.UtcNow.Ticks.ToString("G"),
-                        profileId = coopGameComponent.OwnPlayer.ProfileId,
-                        serverId = coopGameComponent.ServerId
-                    };
+                        await Task.Delay(awaitPeriod);
 
-                    WebSocket.Send(Encoding.UTF8.GetBytes(packet.ToJson()));
-                    packet = null;
+                        if (WebSocket == null)
+                            continue;
+
+                        if (WebSocket.ReadyState != WebSocketSharp.WebSocketState.Open)
+                            continue;
+
+                        if (!SITGameComponent.TryGetCoopGameComponent(out var coopGameComponent))
+                            continue;
+
+                        var packet = new
+                        {
+                            m = "Ping",
+                            t = DateTime.UtcNow.Ticks.ToString("G"),
+                            profileId = ProfileId,
+                            serverId = coopGameComponent.ServerId
+                        };
+
+                        WebSocket.Send(Encoding.UTF8.GetBytes(packet.ToJson()));
+                        packet = null;
+                    } catch (Exception ex)
+                    {
+                        Logger.LogError($"Periodic ping caught: {ex.GetType()} {ex.Message}");
+                    }
                 }
             });
+        }
+
+        private void OnLatencyUpdated(ushort latencyMs)
+        {
+            if (ServerPingSmooth.Count > 5)
+                ServerPingSmooth.TryDequeue(out _);
+            ServerPingSmooth.Enqueue(latencyMs);
+            Ping = (ushort)(ServerPingSmooth.Count > 0 ? Math.Round(ServerPingSmooth.Average()) : 1);
         }
 
         private Dictionary<string, string> GetHeaders()
@@ -729,11 +498,11 @@ namespace StayInTarkov.Networking
             {
                 if (arg.Contains("-token="))
                 {
-                    Session = arg.Replace("-token=", string.Empty);
+                    ProfileId = arg.Replace("-token=", string.Empty);
                     m_RequestHeaders = new Dictionary<string, string>()
                         {
-                            { "Cookie", $"PHPSESSID={Session}" },
-                            { "SessionId", Session }
+                            { "Cookie", $"PHPSESSID={ProfileId}" },
+                            { "SessionId", ProfileId }
                         };
                     break;
                 }
@@ -774,6 +543,44 @@ namespace StayInTarkov.Networking
             {
                 var uri = new Uri(fullUri);
                 return SendAndReceivePostOld(uri, method, data, compress, timeout, debug);
+            }
+
+            throw new ArgumentException($"Unknown method {method}");
+        }
+
+        // <summary>
+        /// Send request to the server and get Stream of data back
+        /// </summary>
+        /// <param name="url">String url endpoint example: /start</param>
+        /// <param name="method">POST or GET</param>
+        /// <param name="data">string json data</param>
+        /// <param name="compress">Should use compression gzip?</param>
+        /// <returns>Stream or null</returns>
+        private async Task<MemoryStream> SendAndReceiveAsync(string url, string method = "GET", string data = null, bool compress = true, int timeout = 9999, bool debug = false)
+        {
+            // Force to DEBUG mode if not Compressing.
+            debug = debug || !compress;
+
+            HttpClient.Timeout = TimeSpan.FromMilliseconds(timeout);
+
+
+            method = method.ToUpper();
+
+            var fullUri = url;
+            if (!Uri.IsWellFormedUriString(fullUri, UriKind.Absolute))
+                fullUri = RemoteEndPoint + fullUri;
+
+            if (method == "GET")
+            {
+                var ms = new MemoryStream();
+                var stream = await HttpClient.GetStreamAsync(fullUri);
+                stream.CopyTo(ms);
+                return ms;
+            }
+            else if (method == "POST" || method == "PUT")
+            {
+                var uri = new Uri(fullUri);
+                return await SendAndReceivePostAsync(uri, method, data, compress, timeout, debug);
             }
 
             throw new ArgumentException($"Unknown method {method}");
@@ -872,9 +679,98 @@ namespace StayInTarkov.Networking
             }
         }
 
+        async Task<MemoryStream> SendAndReceivePostAsync(Uri uri, string method = "GET", string data = null, bool compress = true, int timeout = 9999, bool debug = false)
+        {
+            using (HttpClientHandler handler = new HttpClientHandler())
+            {
+                using (HttpClient httpClient = new HttpClient(handler))
+                {
+                    handler.UseCookies = true;
+                    handler.CookieContainer = new CookieContainer();
+                    httpClient.Timeout = TimeSpan.FromMilliseconds(timeout);
+                    Uri baseAddress = new Uri(RemoteEndPoint);
+                    foreach (var item in GetHeaders())
+                    {
+                        if (item.Key == "Cookie")
+                        {
+                            string[] pairs = item.Value.Split(';');
+                            var keyValuePairs = pairs
+                                .Select(p => p.Split(new[] { '=' }, 2))
+                                .Where(kvp => kvp.Length == 2)
+                                .ToDictionary(kvp => kvp[0], kvp => kvp[1]);
+                            foreach (var kvp in keyValuePairs)
+                            {
+                                handler.CookieContainer.Add(baseAddress, new Cookie(kvp.Key, kvp.Value));
+                            }
+                        }
+                        else
+                        {
+                            httpClient.DefaultRequestHeaders.TryAddWithoutValidation(item.Key, item.Value);
+                        }
+
+                    }
+                    if (!debug && method == "POST")
+                    {
+                        httpClient.DefaultRequestHeaders.AcceptEncoding.TryParseAdd("deflate");
+                    }
+
+                    HttpContent byteContent = null;
+                    if (method.Equals("POST", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(data))
+                    {
+                        if (debug)
+                        {
+                            compress = false;
+                            httpClient.DefaultRequestHeaders.Add("debug", "1");
+                        }
+                        var inputDataBytes = Encoding.UTF8.GetBytes(data);
+                        byte[] bytes = compress ? Zlib.Compress(inputDataBytes) : inputDataBytes;
+                        byteContent = new ByteArrayContent(bytes);
+                        byteContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                        if (compress)
+                        {
+                            byteContent.Headers.ContentEncoding.Add("deflate");
+                        }
+                    }
+
+                    HttpResponseMessage response;
+                    if (byteContent != null)
+                    {
+                        response = await httpClient.PostAsync(uri, byteContent);
+                    }
+                    else
+                    {
+                        response = method.Equals("POST", StringComparison.OrdinalIgnoreCase)
+                            ? await httpClient.PostAsync(uri, null)
+                            : await httpClient.GetAsync(uri);
+                    }
+
+                    var ms = new MemoryStream();
+                    if (response.IsSuccessStatusCode)
+                    {
+                        Stream responseStream = await response.Content.ReadAsStreamAsync();
+                        responseStream.CopyTo(ms);
+                        responseStream.Dispose();
+                    }
+                    else
+                    {
+                        StayInTarkovHelperConstants.Logger.LogError($"Unable to send api request to server.Status code" + response.StatusCode);
+                    }
+
+                    return ms;
+                }
+
+            }
+        }
+
         public byte[] GetData(string url, bool hasHost = false)
         {
             using (var dataStream = SendAndReceive(url, "GET"))
+                return dataStream.ToArray();
+        }
+
+        public byte[] GetBundleData(string url, int timeout = 300000)
+        {
+            using (var dataStream = SendAndReceive(url, "GET", null, true, timeout))
                 return dataStream.ToArray();
         }
 
@@ -883,73 +779,108 @@ namespace StayInTarkov.Networking
             using (Stream stream = SendAndReceive(url, "PUT", data, compress, timeout, debug)) { }
         }
 
+        //public string GetJson(string url, bool compress = true, int timeout = 9999)
+        //{
+        //    using (MemoryStream stream = SendAndReceive(url, "GET", null, compress, timeout))
+        //    {
+        //        if (stream == null)
+        //            return "";
+        //        var bytes = stream.ToArray();
+        //        var result = Zlib.Decompress(bytes);
+        //        bytes = null;
+        //        return result;
+        //    }
+        //}
+
         public string GetJson(string url, bool compress = true, int timeout = 9999)
         {
-            using (MemoryStream stream = SendAndReceive(url, "GET", null, compress, timeout))
+            string result = null;
+            int attempts = 10;
+            while (result == null && attempts-- > 0)
             {
-                if (stream == null)
-                    return "";
-                var bytes = stream.ToArray();
-                var result = Zlib.Decompress(bytes);
-                bytes = null;
-                return result;
+                using (MemoryStream stream = SendAndReceive(url, "GET", null, compress, timeout))
+                {
+                    if (stream == null)
+                        return "";
+                    var bytes = stream.ToArray();
+                    result = Zlib.Decompress(bytes);
+                    bytes = null;
+                }
             }
+            return result;
         }
 
         public string PostJson(string url, string data, bool compress = true, int timeout = 9999, bool debug = false)
         {
+            // people forget the /
+            if(!url.StartsWith("/"))
+                url = "/" + url;
+
             using (MemoryStream stream = SendAndReceive(url, "POST", data, compress, timeout, debug))
             {
-                if (stream == null)
-                    return "";
-
-                var bytes = stream.ToArray();
-                string resultString;
-
-                if (compress)
-                {
-                    if (Zlib.IsCompressed(bytes))
-                        resultString = Zlib.Decompress(bytes);
-                    else
-                        resultString = Encoding.UTF8.GetString(bytes);
-                }
-                else
-                {
-                    resultString = Encoding.UTF8.GetString(bytes);
-                }
-
-                return resultString;
+                return ConvertStreamToString(compress, stream);
             }
+        }
+
+        private static string ConvertStreamToString(bool compress, MemoryStream stream)
+        {
+            if (stream == null)
+                return "";
+
+            var bytes = stream.ToArray();
+            string resultString;
+
+            if (compress)
+            {
+                if (Zlib.IsCompressed(bytes))
+                    resultString = Zlib.Decompress(bytes);
+                else
+                    resultString = Encoding.UTF8.GetString(bytes);
+            }
+            else
+            {
+                resultString = Encoding.UTF8.GetString(bytes);
+            }
+
+            return resultString;
         }
 
         public async Task<string> PostJsonAsync(string url, string data, bool compress = true, int timeout = DEFAULT_TIMEOUT_MS, bool debug = false, int retryAttempts = 5)
         {
             int attempt = 0;
+            Task<MemoryStream> sendReceiveTask;
+
             while (attempt++ < retryAttempts)
             {
                 try
                 {
-                    return await Task.FromResult(PostJson(url, data, compress, timeout, debug));
+                    // people forget the /
+                    if (!url.StartsWith("/"))
+                        url = "/" + url;
+
+                    sendReceiveTask = SendAndReceiveAsync(url, "POST", data, compress, timeout, debug);
+                    using (MemoryStream stream = await sendReceiveTask)
+                    {
+                        sendReceiveTask.Dispose();
+                        sendReceiveTask = null;
+                        return ConvertStreamToString(compress, stream);
+                    }
                 }
                 catch (Exception ex)
                 {
+#if DEBUG
+                    StayInTarkovHelperConstants.Logger.LogError(new System.Diagnostics.StackTrace());
                     StayInTarkovHelperConstants.Logger.LogError(ex);
+#endif
                 }
+                await Task.Delay(1000);
             }
             throw new Exception($"Unable to communicate with Aki Server {url} to post json data: {data}");
         }
 
         public void PostJsonAndForgetAsync(string url, string data, bool compress = true, int timeout = DEFAULT_TIMEOUT_LONG_MS, bool debug = false)
         {
-            SendDataToPool(url, data);
-            //try
-            //{
-            //    _ = Task.Run(() => PostJson(url, data, compress, timeout, debug));
-            //}
-            //catch (Exception ex)
-            //{
-            //    PatchConstants.Logger.LogError(ex);
-            //}
+            Task.Run(() => PostJson(url, data, compress, timeout, debug));
         }
 
 
@@ -980,8 +911,9 @@ namespace StayInTarkov.Networking
 
         public void Dispose()
         {
-            Session = null;
+            ProfileId = null;
             RemoteEndPoint = null;
+            SITGameServerClientDataProcessing.OnLatencyUpdated -= OnLatencyUpdated;
         }
     }
 }

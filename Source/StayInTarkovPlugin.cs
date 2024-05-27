@@ -4,19 +4,20 @@ using Aki.Custom.Patches;
 using BepInEx;
 using BepInEx.Bootstrap;
 using Comfort.Common;
-using EFT;
 using EFT.Communications;
 using EFT.UI;
-using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using StayInTarkov.AkiSupport.Custom;
 using StayInTarkov.AkiSupport.SITFixes;
 using StayInTarkov.Configuration;
 using StayInTarkov.Coop;
 using StayInTarkov.Coop.AI;
+using StayInTarkov.Coop.Player.Health;
 using StayInTarkov.EssentialPatches;
 using StayInTarkov.EssentialPatches.Web;
 using StayInTarkov.FileChecker;
 using StayInTarkov.Health;
+using StayInTarkov.Networking;
 using StayInTarkov.ThirdParty;
 using StayInTarkov.UI;
 using System;
@@ -26,19 +27,18 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
+using BepInEx.Configuration;
 using UnityEngine;
-using UnityEngine.SceneManagement;
+using StayInTarkov.AkiSupport.Singleplayer.Patches.RaidFix;
 
 namespace StayInTarkov
 {
-
     /// <summary>
     /// Stay in Tarkov Plugin. 
     /// Written by: Paulov
     /// Used template by BepInEx
     /// </summary>
-    [BepInPlugin("com.sit.core", "StayInTarkov", "1.10.0")]
+    [BepInPlugin("com.stayintarkov", "StayInTarkov", "1.10.0")]
     [BepInProcess("EscapeFromTarkov.exe")]
     public class StayInTarkovPlugin : BaseUnityPlugin
     {
@@ -72,17 +72,18 @@ namespace StayInTarkov
         /// </summary>
         public static string EFTEXEFileVersion { get; internal set; }
 
-        public static Dictionary<string, string> LanguageDictionary { get; } = new Dictionary<string, string>();
+        public static JObject LanguageDictionary { get; } = new JObject();
 
         public static bool LanguageDictionaryLoaded { get; private set; }
 
+
         internal static string IllegalMessage { get; }
             = LanguageDictionaryLoaded && LanguageDictionary.ContainsKey("ILLEGAL_MESSAGE")
-            ? LanguageDictionary["ILLEGAL_MESSAGE"]
-            : "Illegal game found. Please buy, install and launch the game once.";
+                ? LanguageDictionary["ILLEGAL_MESSAGE"].ToString()
+                : "Illegal game found. Please buy, install and launch the game once.";
 
 
-        async void Awake()
+        void Awake()
         {
             Instance = this;
             Settings = new PluginConfigSettings(Logger, Config);
@@ -97,21 +98,18 @@ namespace StayInTarkov
             EnableCorePatches();
             EnableBundlePatches();
 
-            await Task.Run(() =>
-            {
 
-                EnableSPPatches();
+            EnableSPPatches();
 
-                EnableCoopPatches();
+            EnableCoopPatches();
 
-                EnableAirdropPatches();
+            EnableAirdropPatches();
 
-                ThirdPartyModPatches.Run(Config, this);
-
-            });
+            ThirdPartyModPatches.Run(Config, this);
 
             Logger.LogInfo($"Stay in Tarkov is loaded!");
         }
+
 
         private void EnableBundlePatches()
         {
@@ -144,14 +142,16 @@ namespace StayInTarkov
             if (!LegalGameCheck.Checked)
                 LegalGameCheck.LegalityCheck(Config);
 
-            if (Singleton<PreloaderUI>.Instantiated 
-                && !shownCheckError 
+            if (Singleton<PreloaderUI>.Instantiated
+                && !shownCheckError
                 && LegalGameCheck.LegalGameFound[0] != 0x1
                 && LegalGameCheck.LegalGameFound[1] != 0x0
-                )
+               )
             {
                 shownCheckError = true;
-                Singleton<PreloaderUI>.Instance.ShowCriticalErrorScreen("", StayInTarkovPlugin.IllegalMessage, ErrorScreen.EButtonType.QuitButton, 60, () => { Application.Quit(); }, () => { Application.Quit(); });
+                Singleton<PreloaderUI>.Instance.ShowCriticalErrorScreen("", StayInTarkovPlugin.IllegalMessage,
+                    ErrorScreen.EButtonType.QuitButton, 60, () => { Application.Quit(); },
+                    () => { Application.Quit(); });
             }
             else
             {
@@ -165,79 +165,64 @@ namespace StayInTarkov
 
         private void ReadInLanguageDictionary()
         {
-            var userLanguage = Thread.CurrentThread.CurrentCulture.Name.ToLower();
-            userLanguage = Config.Bind("SIT.Localization", "Language", userLanguage).Value;
-            userLanguage = userLanguage.ToLower();
-            Logger.LogDebug(userLanguage);
+            var currentCultureName = Thread.CurrentThread.CurrentCulture.Name;
+            Logger.LogDebug($"Current Culture: {currentCultureName}");
+
+            ConfigEntry<LanguageList.Language> userLanguage = Config.Bind("SIT.Localization", "Language",
+                LanguageList.ByCultureName(currentCultureName),
+                new ConfigDescription("Language",
+                    null));
+
+            Logger.LogDebug($"User Language: {userLanguage.Value}");
 
             var languageFiles = new List<string>();
-            foreach (var mrs in typeof(StayInTarkovPlugin).Assembly.GetManifestResourceNames().Where(x => x.StartsWith("StayInTarkov.Resources.Language")))
+            foreach (var mrs in typeof(StayInTarkovPlugin).Assembly.GetManifestResourceNames()
+                         .Where(x => x.StartsWith("StayInTarkov.Resources.Language")))
             {
                 languageFiles.Add(mrs);
                 Logger.LogDebug($"Loaded Language File: {mrs}");
             }
 
-            var firstPartOfLang = userLanguage.Substring(0, 2);
-            Logger.LogDebug(firstPartOfLang);
+            Logger.LogDebug(userLanguage.Value);
 
-            Stream stream = null;
-            StreamReader sr = null;
-            string str = null;
-            Dictionary<string, string> resultLocaleDictionary = null;
-            switch (firstPartOfLang)
+            Stream stream;
+            if (Enum.IsDefined(typeof(LanguageList.Language), userLanguage.Value))
             {
-                case "zh":
-                    switch (userLanguage)
-                    {
-                        case "zh_tw":
-                            stream = typeof(StayInTarkovPlugin).Assembly.GetManifestResourceStream(languageFiles.First(x => x.EndsWith("TraditionalChinese.json")));
-                            break;
-                        case "zh_cn":
-                        default:
-                            stream = typeof(StayInTarkovPlugin).Assembly.GetManifestResourceStream(languageFiles.First(x => x.EndsWith("SimplifiedChinese.json")));
-                            break;
-                    }
-                    break;
-                case "ja":
-                    stream = typeof(StayInTarkovPlugin).Assembly.GetManifestResourceStream(languageFiles.First(x => x.EndsWith("Japanese.json")));
-                    break;
-                case "de":
-                    stream = typeof(StayInTarkovPlugin).Assembly.GetManifestResourceStream(languageFiles.First(x => x.EndsWith("German.json")));
-                    break;
-                case "fr":
-                    stream = typeof(StayInTarkovPlugin).Assembly.GetManifestResourceStream(languageFiles.First(x => x.EndsWith("French.json")));
-                    break;
-                case "en":
-                default:
-                    stream = typeof(StayInTarkovPlugin).Assembly.GetManifestResourceStream(languageFiles.First(x => x.EndsWith("English.json")));
-                    break;
+                LanguageList.LanguageInfo languageInfo = LanguageList.ByLanguage(userLanguage.Value);
+                stream = typeof(StayInTarkovPlugin).Assembly.GetManifestResourceStream(
+                    languageFiles.First(x => x.EndsWith(languageInfo.FileName)));
+            }
+            else
+            {
+                stream = typeof(StayInTarkovPlugin).Assembly.GetManifestResourceStream(
+                    languageFiles.First(x => x.EndsWith(LanguageList.Default.FileName)));
             }
 
             if (stream == null)
                 return;
 
+            StreamReader sr;
+            string str;
+            JObject resultLocaleDictionary;
             // Load Language Stream in
             using (sr = new StreamReader(stream))
             {
                 str = sr.ReadToEnd();
 
-                resultLocaleDictionary = JsonConvert.DeserializeObject<Dictionary<string, string>>(str);
-
-                if (resultLocaleDictionary == null)
-                    return;
+                resultLocaleDictionary = JObject.Parse(str);
 
                 foreach (var kvp in resultLocaleDictionary)
                 {
                     LanguageDictionary.Add(kvp.Key, kvp.Value);
                 }
-
-
             }
 
             // Load English Language Stream to Fill any missing expected statements in the Dictionary
-            using (sr = new StreamReader(typeof(StayInTarkovPlugin).Assembly.GetManifestResourceStream(languageFiles.First(x => x.EndsWith("English.json")))))
+            using (sr = new StreamReader(
+                       typeof(StayInTarkovPlugin).Assembly.GetManifestResourceStream(
+                           languageFiles.First(x => x.EndsWith(LanguageList.Default.FileName)))))
             {
-                foreach (var kvp in JsonConvert.DeserializeObject<Dictionary<string, string>>(sr.ReadToEnd()))
+                foreach (var kvp in JObject.Parse(sr.ReadToEnd()))
                 {
                     if (!LanguageDictionary.ContainsKey(kvp.Key))
                         LanguageDictionary.Add(kvp.Key, kvp.Value);
@@ -263,13 +248,14 @@ namespace StayInTarkov
                     {
                         var majorN1 = EFTVersionMajor.Split('.')[0]; // 0
                         var majorN2 = EFTVersionMajor.Split('.')[1]; // 14
-                        var majorN3 = EFTVersionMajor.Split('.')[2]; // 0
-                        var majorN4 = EFTVersionMajor.Split('.')[3]; // 0
+                        var majorN3 = EFTVersionMajor.Split('.')[2]; // 1
+                        var majorN4 = EFTVersionMajor.Split('.')[3]; // 3
                         var majorN5 = EFTVersionMajor.Split('.')[4]; // build number
 
-                        if (majorN1 != "0" || majorN2 != "14" || majorN3 != "0" || majorN4 != "0")
+                        if (majorN1 != "0" || majorN2 != "14" || majorN3 != "1" || majorN4 != "3")
                         {
-                            Logger.LogError("Version Check: This version of SIT is not designed to work with this version of EFT.");
+                            Logger.LogError(
+                                "Version Check: This version of SIT is not designed to work with this version of EFT.");
                         }
                         else
                         {
@@ -299,6 +285,8 @@ namespace StayInTarkov
                 new SslCertificatePatch().Enable();
                 new Aki.Core.Patches.UnityWebRequestPatch().Enable();
                 new SendCommandsPatch().Enable();
+                // Fixes
+                new EndRaidDebug().Enable();
 
                 //https to http | wss to ws
                 var url = DetectBackendUrlAndToken.GetBackendConnection().BackendUrl;
@@ -307,12 +295,12 @@ namespace StayInTarkov
                     new TransportPrefixPatch().Enable();
                     new WebSocketPatch().Enable();
                 }
-
             }
             catch (Exception e)
             {
                 Logger.LogError(e);
             }
+
             Logger.LogDebug($"{nameof(EnableCorePatches)} Complete");
         }
 
@@ -331,13 +319,16 @@ namespace StayInTarkov
                 EnableSPPatches_PlayerHealth(Config);
 
                 //// --------- SCAV MODE ---------------------
-                new RemoveScavModeButtonPatch().Enable();
+                //new RemoveScavModeButtonPatch().Enable();
 
                 //// --------- READY Button ---------------------
                 new RemoveReadyButtonPatch().Enable();
 
                 //// --------- Airdrop -----------------------
                 //new AirdropPatch().Enable();
+
+                //// --------- Settings -----------------------
+                SettingsLocationPatch.Enable();
 
                 //// --------- Screens ----------------
                 EnableSPPatches_Screens(Config);
@@ -350,9 +341,6 @@ namespace StayInTarkov
                 EnableSPPatches_Bots(Config);
 
                 new QTEPatch().Enable();
-
-               
-
             }
             catch (Exception ex)
             {
@@ -365,7 +353,6 @@ namespace StayInTarkov
         {
             //new OfflineRaidMenuPatch().Enable();
             new OfflineSettingsScreenPatch().Enable();
-
         }
 
         private static void EnableSPPatches_PlayerProgression()
@@ -384,19 +371,22 @@ namespace StayInTarkov
             new ChangeHealthPatch().Enable();
             new ChangeHydrationPatch().Enable();
             new ChangeEnergyPatch().Enable();
-            new OnDeadPatch().Enable();
+            new PHC_HandleFall_Patch().Enable();
             new MainMenuControllerForHealthListenerPatch().Enable();
         }
 
         private static void EnableSPPatches_Bots(BepInEx.Configuration.ConfigFile config)
         {
             new CoreDifficultyPatch().Enable();
+            new BossSpawnChancePatch().Enable();
             new BotDifficultyPatch().Enable();
             new BotSettingsRepoClassIsFollowerFixPatch().Enable();
             new BotSelfEnemyPatch().Enable();
             new PmcFirstAidPatch().Enable();
             new SpawnProcessNegativeValuePatch().Enable();
             new LocationLootCacheBustingPatch().Enable();
+            new FixBrokenSpawnOnSandboxPatch().Enable();
+            new IsEnemyPatch().Enable();
         }
 
         private void EnableCoopPatches()
@@ -421,9 +411,11 @@ namespace StayInTarkov
                 stringBuilder.AppendLine(error);
                 stringBuilder.AppendLine();
             }
+
             string errorMessage = stringBuilder.ToString();
 
-            DisplayMessageNotifications.DisplayMessageNotification($"{errorMessage}", ENotificationDurationType.Infinite, ENotificationIconType.Alert, UnityEngine.Color.red);
+            DisplayMessageNotifications.DisplayMessageNotification($"{errorMessage}",
+                ENotificationDurationType.Infinite, ENotificationIconType.Alert, UnityEngine.Color.red);
 
             // Show an error in the BepInEx console/log file
             Logger.LogError(errorMessage);
@@ -438,11 +430,6 @@ namespace StayInTarkov
             }
 
             ShownDependancyError = true;
-
-
         }
-
-
-
     }
 }

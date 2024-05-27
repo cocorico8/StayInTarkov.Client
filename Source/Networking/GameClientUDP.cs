@@ -1,24 +1,31 @@
-﻿using Aki.Custom.Airdrops;
-using BepInEx.Logging;
+﻿using BepInEx.Logging;
 using Comfort.Common;
+using EFT;
+using EFT.UI;
 using LiteNetLib;
 using LiteNetLib.Utils;
-using Sirenix.Utilities;
 using StayInTarkov.Configuration;
 using StayInTarkov.Coop;
 using StayInTarkov.Coop.Components.CoopGameComponents;
 using StayInTarkov.Coop.Matchmaker;
 using StayInTarkov.Coop.NetworkPacket;
-using StayInTarkov.Coop.Players;
+using StayInTarkov.Coop.SITGameModes;
+
 //using StayInTarkov.Coop.Players;
 //using StayInTarkov.Networking.Packets;
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
+using System.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.Profiling;
 using UnityStandardAssets.Water;
+using static BackendConfigManagerConfig;
 using static StayInTarkov.Networking.SITSerialization;
 
 /* 
@@ -30,24 +37,28 @@ namespace StayInTarkov.Networking
 {
     public class GameClientUDP : MonoBehaviour, INetEventListener, IGameClient
     {
+        public Dictionary<string, IPEndPoint> ServerEndPoints = new Dictionary<string, IPEndPoint>();
+        public NatHelper _natHelper;
         private LiteNetLib.NetManager _netClient;
         private NetDataWriter _dataWriter = new();
-        public CoopPlayer MyPlayer { get; set; }
-        public ConcurrentDictionary<string, CoopPlayer> Players => CoopGameComponent.Players;
-        private CoopGameComponent CoopGameComponent { get; set; }
+        private SITGameComponent CoopGameComponent { get; set; }
         public NetPacketProcessor _packetProcessor = new();
-        public int Ping = 0;
         public int ConnectedClients = 0;
-
+        public ushort Ping { get; private set; } = 0;
+        public float DownloadSpeedKbps { get; private set; } = 0;
+        public float UploadSpeedKbps { get; private set; } = 0;
+        public float PacketLoss { get; private set; } = 0;
         private ManualLogSource Logger { get; set; }
 
         void Awake()
         {
-            CoopGameComponent = CoopPatches.CoopGameComponentParent.GetComponent<CoopGameComponent>();
+            CoopGameComponent = CoopPatches.CoopGameComponentParent.GetComponent<SITGameComponent>();
             Logger = BepInEx.Logging.Logger.CreateLogSource(nameof(GameClientUDP));
+
+            //PublicEndPoint = new IPEndPoint(IPAddress.Parse(StayInTarkovPlugin.SITIPAddresses.ExternalAddresses.IPAddressV4), PluginConfigSettings.Instance.CoopSettings.SITUdpPort);
         }
 
-        public void Start()
+        public async void Start()
         {
             _packetProcessor.RegisterNestedType(Vector3Utils.Serialize, Vector3Utils.Deserialize);
             _packetProcessor.RegisterNestedType(Vector2Utils.Serialize, Vector2Utils.Deserialize);
@@ -70,300 +81,153 @@ namespace StayInTarkov.Networking
                 UnconnectedMessagesEnabled = true,
                 UpdateTime = 15,
                 NatPunchEnabled = false,
-                IPv6Enabled = false
+                IPv6Enabled = false,
+                PacketPoolSize = 999,
+                EnableStatistics = true,
             };
 
-            _netClient.Start();
-            _netClient.Connect(PluginConfigSettings.Instance.CoopSettings.SITUDPHostIPV4, PluginConfigSettings.Instance.CoopSettings.SITUDPPort, "sit.core");
+            // ===============================================================
+            // HERE BE DRAGONS.
+            // Make sure you understand NAT punching, UPnP and port-forwarding
+            // if you plan on changing this code
+            // ===============================================================
+
+            if (SITMatchmaking.IsClient)
+            {
+                var msg = $"Connecting to Nat Helper as {SITMatchmaking.Profile.ProfileId}...";
+                EFT.UI.ConsoleScreen.Log(msg);
+                Logger.LogDebug(msg);
+
+                _natHelper = new NatHelper(_netClient, SITMatchmaking.Profile.ProfileId);
+                _natHelper.Connect();
+
+                if (!_natHelper.IsConnected())
+                {
+                    Logger.LogError("Could not connect to NatHelper");
+                    return;
+                }
+
+                msg = $"Getting Server Endpoints...";
+                EFT.UI.ConsoleScreen.Log(msg);
+                Logger.LogDebug(msg);
+
+                ServerEndPoints = await _natHelper.GetEndpointsRequestAsync(SITMatchmaking.GetGroupId(), SITMatchmaking.Profile.ProfileId);
+
+                msg = $"Found endpoints ${string.Join("\n", ServerEndPoints)}";
+                EFT.UI.ConsoleScreen.Log(msg);
+                Logger.LogInfo(msg);
+
+                if (ServerEndPoints.ContainsKey("explicit"))
+                {
+                    var expli = ServerEndPoints["explicit"];
+                    msg = $"Forcing connection to {expli}";
+                    Logger.LogDebug(msg);
+                    EFT.UI.ConsoleScreen.Log(msg);
+
+                    _netClient.Start();
+                    _netClient.Connect(expli, "sit.core");
+                }
+                else if (ServerEndPoints.ContainsKey("stun"))
+                {
+                    var localPort = 0;
+                    _natHelper.AddStunEndPoint(ref localPort);
+
+                    if (_natHelper.PublicEndPoints.TryGetValue("stun", out IPEndPoint stunEndpoint))
+                    {
+                        msg = $"Performing NAT Punch Request for {stunEndpoint} (local port {localPort})...";
+                        EFT.UI.ConsoleScreen.Log(msg);
+                        Logger.LogInfo(msg);
+
+                        _netClient.Start(localPort);
+
+                        await _natHelper.NatPunchRequestAsync(SITMatchmaking.GetGroupId(), SITMatchmaking.Profile.ProfileId, ServerEndPoints["stun"]);
+
+                        _netClient.Connect(ServerEndPoints["stun"], "sit.core");
+                    }
+                    else
+                    {
+                        Logger.LogError("Could not perform stun + nat punching");
+                    }
+                }
+                else
+                {
+                    _netClient.Start();
+
+                    // Broadcast for local connection
+                    _netClient.SendBroadcast([1], SITMatchmaking.PublicPort);
+
+                    ServerEndPoints.Remove("explicit");
+                    ServerEndPoints.Remove("stun");
+
+                    foreach (var serverEndPoint in ServerEndPoints)
+                    {
+                        await Task.Delay(2000);
+
+                        // Make sure we are not already connected
+                        if (_netClient.ConnectedPeersCount > 0)
+                        {
+                            Logger.LogInfo("Successfully connected");
+                            break;
+                        }
+
+                        msg = $"Connecting to {serverEndPoint.Value}";
+                        Logger.LogDebug(msg);
+                        EFT.UI.ConsoleScreen.Log(msg);
+
+                        _netClient.Connect(serverEndPoint.Value, "sit.core");
+                    }
+                }
+
+                _natHelper.Close();
+            }
+            else if (SITMatchmaking.IsServer)
+            {
+                // Connect locally if we're the server.
+                var endpoint = new IPEndPoint(IPAddress.Loopback, PluginConfigSettings.Instance.CoopSettings.UdpServerLocalPort);
+                var msg = $"Server connecting as client to {endpoint}";
+                Logger.LogDebug(msg);
+                EFT.UI.ConsoleScreen.Log(msg);
+                _netClient.Start();
+                _netClient.Connect(endpoint, "sit.core");
+            }
         }
-
-        //private void OnAirdropLootPacketReceived(AirdropLootPacket packet, NetPeer peer)
-        //{
-        //    if (!Singleton<SITAirdropsManager>.Instantiated)
-        //    {
-        //        EFT.UI.ConsoleScreen.LogError("OnAirdropLootPacketReceived: Received loot package but manager is not instantiated!");
-        //        return;
-        //    }
-        //    Singleton<SITAirdropsManager>.Instance.ReceiveBuildLootContainer(packet.Loot, packet.Config);
-        //}
-
-        //private void OnAirdropPacketReceived(AirdropPacket packet, NetPeer peer)
-        //{
-        //    if (Singleton<SITAirdropsManager>.Instantiated)
-        //    {
-        //        Singleton<SITAirdropsManager>.Instance.AirdropParameters = new()
-        //        {
-        //            Config = packet.Config,
-        //            AirdropAvailable = packet.AirdropAvailable,
-        //            PlaneSpawned = packet.PlaneSpawned,
-        //            BoxSpawned = packet.BoxSpawned,
-        //            DistanceTraveled = packet.DistanceTraveled,
-        //            DistanceToTravel = packet.DistanceToTravel,
-        //            DistanceToDrop = packet.DistanceToDrop,
-        //            Timer = packet.Timer,
-        //            DropHeight = packet.DropHeight,
-        //            TimeToStart = packet.TimeToStart,
-        //            RandomAirdropPoint = packet.BoxPoint,
-        //            SpawnPoint = packet.SpawnPoint,
-        //            LookPoint = packet.LookPoint
-        //        };
-        //    }
-        //    else
-        //    {
-        //        EFT.UI.ConsoleScreen.LogError("OnAirdropPacketReceived: Received package but manager is not instantiated!");
-        //    }
-        //}
-
-        //private void OnInformationPacketReceived(InformationPacket packet, NetPeer peer)
-        //{
-        //    if (!packet.IsRequest)
-        //        ConnectedClients = packet.NumberOfPlayers;
-        //}
-
-        //private void OnAllCharacterRequestPacketReceived(AllCharacterRequestPacket packet, NetPeer peer)
-        //{
-        //    if (!packet.IsRequest)
-        //    {
-        //        EFT.UI.ConsoleScreen.Log($"Received CharacterRequest! ProfileID: {packet.PlayerInfo.Profile.ProfileId}, Nickname: {packet.PlayerInfo.Profile.Nickname}");
-        //        if (packet.ProfileId != MyPlayer.ProfileId)
-        //        {
-        //            if (!CoopGameComponent.PlayersToSpawn.ContainsKey(packet.PlayerInfo.Profile.ProfileId))
-        //                CoopGameComponent.PlayersToSpawn.TryAdd(packet.PlayerInfo.Profile.ProfileId, ESpawnState.None);
-        //            if (!CoopGameComponent.PlayersToSpawnProfiles.ContainsKey(packet.PlayerInfo.Profile.ProfileId))
-        //                CoopGameComponent.PlayersToSpawnProfiles.Add(packet.PlayerInfo.Profile.ProfileId, packet.PlayerInfo.Profile);
-
-        //            CoopGameComponent.QueueProfile(packet.PlayerInfo.Profile, new Vector3(packet.Position.x, packet.Position.y + 0.5f, packet.Position.y), packet.IsAlive);
-        //        }
-        //    }
-        //    else if (packet.IsRequest)
-        //    {
-        //        EFT.UI.ConsoleScreen.Log($"Received CharacterRequest from server, send my Profile.");
-        //        AllCharacterRequestPacket requestPacket = new(MyPlayer.ProfileId)
-        //        {
-        //            IsRequest = false,
-        //            PlayerInfo = new()
-        //            {
-        //                Profile = MyPlayer.Profile
-        //            },
-        //            IsAlive = MyPlayer.ActiveHealthController.IsAlive,
-        //            Position = MyPlayer.Transform.position
-        //        };
-        //        _dataWriter.Reset();
-        //        SendData(_dataWriter, ref requestPacket, DeliveryMethod.ReliableUnordered);
-        //    }
-        //}
-
-        //private void OnCommonPlayerPacketReceived(CommonPlayerPacket packet, NetPeer peer)
-        //{
-        //    if (!Players.ContainsKey(packet.ProfileId))
-        //        return;
-
-        //    var playerToApply = Players[packet.ProfileId];
-        //    if (playerToApply != default && playerToApply != null)
-        //    {
-        //        playerToApply.CommonPlayerPackets.Enqueue(packet);
-        //    }
-        //}
-
-        //private void OnInventoryPacketReceived(InventoryPacket packet, NetPeer peer)
-        //{
-        //    if (!Players.ContainsKey(packet.ProfileId))
-        //        return;
-
-        //    var playerToApply = Players[packet.ProfileId];
-        //    if (playerToApply != default && playerToApply != null)
-        //    {
-        //        playerToApply.InventoryPackets.Enqueue(packet);
-        //    }
-        //}
-
-        //private void OnHealthPacketReceived(HealthPacket packet, NetPeer peer)
-        //{
-        //    EFT.UI.ConsoleScreen.Log($"{packet.ProfileId}");
-        //    if (!Players.ContainsKey(packet.ProfileId))
-        //        return;
-
-        //    var playerToApply = Players[packet.ProfileId];
-        //    if (playerToApply != default && playerToApply != null)
-        //    {
-        //        playerToApply.HealthPackets.Enqueue(packet);
-        //    }
-        //}
-
-        //private void OnFirearmControllerPacketReceived(WeaponPacket packet, NetPeer peer)
-        //{
-        //    if (!Players.ContainsKey(packet.ProfileId))
-        //        return;
-
-        //    var playerToApply = Players[packet.ProfileId];
-        //    if (playerToApply != default && playerToApply != null && !playerToApply.IsYourPlayer)
-        //    {
-        //        playerToApply.FirearmPackets.Enqueue(packet);
-        //    }
-        //}
-
-        //private void OnWeatherPacketReceived(WeatherPacket packet, NetPeer peer)
-        //{
-        //    var weatherController = EFT.Weather.WeatherController.Instance;
-        //    if (weatherController != null)
-        //    {
-        //        var weatherDebug = weatherController.WeatherDebug;
-        //        if (weatherDebug != null)
-        //        {
-        //            weatherDebug.Enabled = true;
-
-        //            weatherDebug.CloudDensity = packet.CloudDensity;
-        //            weatherDebug.Fog = packet.Fog;
-        //            weatherDebug.LightningThunderProbability = packet.LightningThunderProbability;
-        //            weatherDebug.Rain = packet.Rain;
-        //            weatherDebug.Temperature = packet.Temperature;
-        //            weatherDebug.TopWindDirection = new(packet.TopWindX, packet.TopWindY);
-
-        //            Vector2 windDirection = new(packet.WindX, packet.WindY);
-
-        //            // working dog sh*t, if you are the programmer, DON'T EVER DO THIS! - dounai2333
-        //            static bool BothPositive(float f1, float f2) => f1 > 0 && f2 > 0;
-        //            static bool BothNegative(float f1, float f2) => f1 < 0 && f2 < 0;
-        //            static bool VectorIsSameQuadrant(Vector2 v1, Vector2 v2, out int flag)
-        //            {
-        //                flag = 0;
-        //                if (v1.x != 0 && v1.y != 0 && v2.x != 0 && v2.y != 0)
-        //                {
-        //                    if ((BothPositive(v1.x, v2.x) && BothPositive(v1.y, v2.y))
-        //                    || (BothNegative(v1.x, v2.x) && BothNegative(v1.y, v2.y))
-        //                    || (BothPositive(v1.x, v2.x) && BothNegative(v1.y, v2.y))
-        //                    || (BothNegative(v1.x, v2.x) && BothPositive(v1.y, v2.y)))
-        //                    {
-        //                        flag = 1;
-        //                        return true;
-        //                    }
-        //                }
-        //                else
-        //                {
-        //                    if (v1.x != 0 && v2.x != 0)
-        //                    {
-        //                        if (BothPositive(v1.x, v2.x) || BothNegative(v1.x, v2.x))
-        //                        {
-        //                            flag = 1;
-        //                            return true;
-        //                        }
-        //                    }
-        //                    else if (v1.y != 0 && v2.y != 0)
-        //                    {
-        //                        if (BothPositive(v1.y, v2.y) || BothNegative(v1.y, v2.y))
-        //                        {
-        //                            flag = 2;
-        //                            return true;
-        //                        }
-        //                    }
-        //                }
-        //                return false;
-        //            }
-
-        //            for (int i = 1; i < WeatherClass.WindDirections.Count(); i++)
-        //            {
-        //                Vector2 direction = WeatherClass.WindDirections[i];
-        //                if (VectorIsSameQuadrant(windDirection, direction, out int flag))
-        //                {
-        //                    weatherDebug.WindDirection = (EFT.Weather.WeatherDebug.Direction)i;
-        //                    weatherDebug.WindMagnitude = flag switch
-        //                    {
-        //                        1 => windDirection.x / direction.x,
-        //                        2 => windDirection.y / direction.y,
-        //                        _ => weatherDebug.WindMagnitude
-        //                    };
-        //                    break;
-        //                }
-        //            }
-        //        }
-        //        else
-        //        {
-        //            EFT.UI.ConsoleScreen.LogError("TimeAndWeather: WeatherDebug is null!");
-        //        }
-        //    }
-        //    else
-        //    {
-        //        EFT.UI.ConsoleScreen.LogError("TimeAndWeather: WeatherController is null!");
-        //    }
-        //}
-
-        //private void OnGameTimerPacketReceived(GameTimerPacket packet, NetPeer peer)
-        //{
-        //    CoopGameComponent coopGameComponent = CoopGameComponent.GetCoopGameComponent();
-        //    if (coopGameComponent == null)
-        //        return;
-
-        //    if (MatchmakerAcceptPatches.IsClient)
-        //    {
-        //        var sessionTime = new TimeSpan(packet.Tick);
-
-        //        if (coopGameComponent.LocalGameInstance is CoopGame coopGame)
-        //        {
-        //            var gameTimer = coopGame.GameTimer;
-        //            if (gameTimer.StartDateTime.HasValue && gameTimer.SessionTime.HasValue)
-        //            {
-        //                if (gameTimer.PastTime.TotalSeconds < 3)
-        //                    return;
-
-        //                var timeRemain = gameTimer.PastTime + sessionTime;
-
-        //                if (Math.Abs(gameTimer.SessionTime.Value.TotalSeconds - timeRemain.TotalSeconds) < 5)
-        //                    return;
-
-        //                gameTimer.ChangeSessionTime(timeRemain);
-
-        //                // FIXME: Giving SetTime() with empty exfil point arrays has a known bug that may cause client game crashes!
-        //                coopGame.GameUi.TimerPanel.SetTime(gameTimer.StartDateTime.Value, coopGame.Profile_0.Info.Side, gameTimer.SessionSeconds(), []);
-        //            }
-        //        }
-        //    }
-        //}
-
-        //private void OnPlayerStatePacketReceived(PlayerStatePacket packet, NetPeer peer)
-        //{
-        //    if (!Players.ContainsKey(packet.ProfileId))
-        //        return;
-
-        //    var playerToApply = Players[packet.ProfileId];
-        //    if (playerToApply != default && playerToApply != null && !playerToApply.IsYourPlayer)
-        //    {
-        //        playerToApply.NewState = packet;
-        //    }
-        //}
-
         void Update()
         {
             _netClient.PollEvents();
+        }
 
-            var peer = _netClient.FirstPeer;
-            if (peer != null && peer.ConnectionState == ConnectionState.Connected)
-            {
-                //Basic lerp
-                //_lerpTime += Time.deltaTime / Time.fixedDeltaTime;
-            }
-            else
-            {
-                //_netClient.SendBroadcast([1], PluginConfigSettings.Instance.CoopSettings.SITGamePlayPort);
-            }
+        public void ResetStats()
+        {
+            DownloadSpeedKbps = _netClient.Statistics.BytesReceived / 1024f;
+            UploadSpeedKbps = _netClient.Statistics.BytesSent / 1024f;
+            PacketLoss = _netClient.Statistics.PacketsSent == 0 ? 0 : _netClient.Statistics.PacketLoss * 100f / _netClient.Statistics.PacketsSent;
+            _netClient.Statistics.Reset();
+        }
+
+        void INetEventListener.OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod)
+        {
+            var bytes = reader.GetRemainingBytes();
+            SITGameServerClientDataProcessing.ProcessPacketBytes(bytes, Encoding.UTF8.GetString(bytes));
         }
 
         void OnDestroy()
         {
             if (_netClient != null)
                 _netClient.Stop();
-        }
 
-        public void SendData<T>(NetDataWriter writer, ref T packet, DeliveryMethod deliveryMethod) where T : INetSerializable
-        {
-            _packetProcessor.WriteNetSerializable(writer, ref packet);
-            _netClient.FirstPeer.Send(writer, deliveryMethod);
+            if (_natHelper != null)
+                _natHelper.Close();
         }
-
         
-
-
         public void OnPeerConnected(NetPeer peer)
         {
+            // Disconnect if more than one endpoint was reached
+            if (_netClient.ConnectedPeersCount > 1)
+            {
+                peer.Disconnect();
+                return;
+            }
+
             EFT.UI.ConsoleScreen.Log("[CLIENT] We connected to " + peer.EndPoint);
             NotificationManagerClass.DisplayMessageNotification($"Connected to server {peer.EndPoint}.",
                 EFT.Communications.ENotificationDurationType.Default, EFT.Communications.ENotificationIconType.Friend);
@@ -372,11 +236,6 @@ namespace StayInTarkov.Networking
         public void OnNetworkError(IPEndPoint endPoint, SocketError socketErrorCode)
         {
             EFT.UI.ConsoleScreen.Log("[CLIENT] We received error " + socketErrorCode);
-        }
-
-        public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod)
-        {
-            _packetProcessor.ReadAllPackets(reader, peer);
         }
 
         public void OnNetworkReceiveUnconnected(IPEndPoint remoteEndPoint, NetPacketReader reader, UnconnectedMessageType messageType)
@@ -390,7 +249,7 @@ namespace StayInTarkov.Networking
 
         public void OnNetworkLatencyUpdate(NetPeer peer, int latency)
         {
-            Ping = latency;
+            Ping = (ushort)latency;
         }
 
         public void OnConnectionRequest(LiteNetLib.ConnectionRequest request)
@@ -403,9 +262,63 @@ namespace StayInTarkov.Networking
             EFT.UI.ConsoleScreen.Log("[CLIENT] We disconnected because " + disconnectInfo.Reason);
         }
 
-        public void SendDataToServer(byte[] data)
+        int firstPeerErrorCount = 0;
+
+        public void SendData(byte[] data)
         {
+            if (_netClient == null)
+            {
+                EFT.UI.ConsoleScreen.LogError("[CLIENT] Could not communicate to the Server");
+                return;
+            }
+
+            if (_netClient.FirstPeer == null)
+            {
+                string clientFirstPeerIsNullMessage = "[CLIENT] Could not communicate to the Server";
+                EFT.UI.ConsoleScreen.LogError(clientFirstPeerIsNullMessage);
+                Logger.LogError(clientFirstPeerIsNullMessage);
+
+                firstPeerErrorCount++;
+
+                if(firstPeerErrorCount == 30)
+                {
+                    Singleton<PreloaderUI>.Instance.ShowCriticalErrorScreen("Connection Error"
+                        , $"Connection Lost. Unable to communicate with Server. Error: {clientFirstPeerIsNullMessage}"
+                        , ErrorScreen.EButtonType.OkButton
+                        , 60
+                        , () => { Singleton<ISITGame>.Instance.Stop(SITMatchmaking.Profile.ProfileId, ExitStatus.Survived, ""); }
+                        , () => { Singleton<ISITGame>.Instance.Stop(SITMatchmaking.Profile.ProfileId, ExitStatus.Survived, ""); }
+                        );
+
+                    throw new Exception();
+                }
+                return;
+            }
+
             _netClient.FirstPeer.Send(data, LiteNetLib.DeliveryMethod.ReliableOrdered);
+        }
+
+        public void SendData<T>(ref T packet) where T : BasePacket
+        {
+            if (_netClient == null)
+            {
+                EFT.UI.ConsoleScreen.LogError("[CLIENT] Could not communicate to the Server");
+                return;
+            }
+
+            if (_netClient.FirstPeer == null)
+            {
+                string clientFirstPeerIsNullMessage = "[CLIENT] Could not communicate to the Server";
+                EFT.UI.ConsoleScreen.LogError(clientFirstPeerIsNullMessage);
+                return;
+            }
+
+            using NetDataWriter writer = new NetDataWriter();
+            _packetProcessor.WriteNetSerializable(writer, ref packet);
+            if (_netClient.FirstPeer != null)
+            {
+                _netClient.FirstPeer.Send(writer, DeliveryMethod.ReliableOrdered);
+            }
         }
     }
 }

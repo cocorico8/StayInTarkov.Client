@@ -1,7 +1,10 @@
 ﻿using BepInEx.Configuration;
 using BepInEx.Logging;
+using StayInTarkov.Networking;
 using System;
 using System.Net;
+
+#nullable enable
 
 namespace StayInTarkov.Configuration
 {
@@ -9,12 +12,13 @@ namespace StayInTarkov.Configuration
     /// Created by: Paulov
     /// Description: Stores and Loads all of the Plugin config settings
     /// </summary>
+
     public class PluginConfigSettings
     {
         public ConfigFile Config { get; }
         public ManualLogSource Logger { get; }
 
-        public static PluginConfigSettings Instance { get; private set; }
+        public static PluginConfigSettings? Instance { get; private set; }
 
         public CoopConfigSettings CoopSettings { get; }
 
@@ -36,44 +40,37 @@ namespace StayInTarkov.Configuration
 
         public class SITAdvancedSettings
         {
+            public const string Advanced = "Advanced";
             public ConfigFile Config { get; }
             public ManualLogSource Logger { get; }
+
+            public bool SETTING_EnableSITGC
+            {
+                get
+                {
+                    return StayInTarkovPlugin.Instance.Config.Bind
+                       (Advanced, "EnableSITGC", false, new ConfigDescription("Enable SIT's own Garbage Collector")).Value;
+                }
+            }
+
+            public uint SETTING_SITGCMemoryThreshold
+            {
+                get
+                {
+                    return StayInTarkovPlugin.Instance.Config.Bind
+                       (Advanced, "SITGCMemoryThreshold", 90u, new ConfigDescription("SIT's Garbage Collector. System Memory % before SIT forces a Garbage Collection.")).Value;
+                }
+            }
+
 
             public SITAdvancedSettings(ManualLogSource logger, ConfigFile config)
             {
                 Logger = logger;
                 Config = config;
-                GetSettings();
+                _ = SETTING_EnableSITGC;
+                _ = SETTING_SITGCMemoryThreshold;
             }
 
-            public bool UseSITGarbageCollector { get; set; }
-
-            public long SITGCMemoryThreshold { get; internal set; }
-
-            public bool SITGCClearAssets { get; internal set; }
-
-            public bool SITGCAggressiveClean { get; internal set; }
-
-            public void GetSettings()
-            {
-                UseSITGarbageCollector = StayInTarkovPlugin.Instance.Config.Bind
-                ("Advanced", "UseSITGarbageCollector", true, new ConfigDescription("Whether to use the Garbage Collector developed in to SIT OR leave it to BSG/Unity")).Value;
-
-                SITGCMemoryThreshold = StayInTarkovPlugin.Instance.Config.Bind
-                ("Advanced", "SITGarbageCollectorMemoryThreshold", 512, new ConfigDescription("The SIT Garbage Collector memory threshold (in megabytes) between ticks before forcing a garbage collection")).Value;
-
-                SITGCClearAssets = StayInTarkovPlugin.Instance.Config.Bind
-                ("Advanced", "SITGarbageCollectorClearAssets", false, new ConfigDescription("Set SIT Garbage Collector to clear Unity assets. Reduces RAM usage but can be unstable!")).Value;
-
-                SITGCAggressiveClean = StayInTarkovPlugin.Instance.Config.Bind
-                ("Advanced", "SITGarbageCollectorAggressiveClean", false, new ConfigDescription("Set SIT Garbage Collector to aggresively clean RAM. This will signficantly reduce in Raid RAM usage at the expense of a 1-5s freeze.")).Value;
-
-                Logger.LogInfo($"UseSITGarbageCollector:{UseSITGarbageCollector}");
-                Logger.LogInfo($"SITGCMemoryThreshold:{SITGCMemoryThreshold}");
-                Logger.LogInfo($"SITGCClearAssets:{SITGCClearAssets}");
-                Logger.LogInfo($"SITGCAggressiveClean:{SITGCAggressiveClean}");
-
-            }
         }
 
         public class CoopConfigSettings
@@ -102,9 +99,16 @@ namespace StayInTarkov.Configuration
             public bool SETTING_HeadshotsAlwaysKill { get; set; } = false;
             public bool SETTING_ShowFeed { get; set; } = true;
             public bool SETTING_ShowSITStatistics { get; set; } = true;
-            public HostProtocol SITHostProtocol { get; private set; }
+            public bool ShowPing { get; set; } = true;
             public int SITWebSocketPort { get; set; } = 6970;
-            public int SITUDPPort { get; set; } = 6971;
+            public int SITNatHelperPort { get; set; } = 6971;
+            public string UdpServerLocalIPv4 { get; set; } = "0.0.0.0";
+            public string UdpServerLocalIPv6 { get; set; } = "::";
+            public int UdpServerLocalPort { get; set; } = 6972;
+            public string UdpServerPublicIP { get; set; } = "";
+            public int UdpServerPublicPort { get; set; } = 6972;
+            //public ServerType SITServerType { get; set; } = ServerType.Relay;
+            public NatTraversalMethod SITNatTraversalMethod { get; set; } = NatTraversalMethod.Upnp;
 
             public bool AllPlayersSpawnTogether { get; set; } = true;
             public bool ArenaMode { get; set; } = false;
@@ -113,17 +117,16 @@ namespace StayInTarkov.Configuration
             public bool ForceHighPingMode { get; set; } = false;
             public bool RunThroughOnServerStop { get; set; } = true;
 
+            public int WaitingTimeBeforeStart { get; private set; }
+
             public int BlackScreenOnDeathTime
             {
                 get
                 {
                     return StayInTarkovPlugin.Instance.Config.Bind
-                       ("Coop", "BlackScreenOnDeathTime", 333, new ConfigDescription("How long to wait until your death waits to become a Free Camera")).Value;
+                       ("Coop", "BlackScreenOnDeathTime", 500, new ConfigDescription("How long to wait until your death waits to become a Free Camera")).Value;
                 }
             }
-
-            public string SITUDPHostIPV4 { get; set; }
-            public string SITUDPHostIPV6 { get; set; }
 
             public void GetSettings()
             {
@@ -153,26 +156,51 @@ namespace StayInTarkov.Configuration
                 ForceHighPingMode = StayInTarkovPlugin.Instance.Config.Bind("Coop", "ForceHighPingMode", false
                         , new ConfigDescription("Forces the High Ping Mode which allows some actions to not round-trip. This may be useful if you have large input lag")).Value;
 
+                WaitingTimeBeforeStart = Config.Bind("Coop", "WaitingTimeBeforeStart", 120
+                        , new ConfigDescription("Time in seconds to wait for players before starting the game automatically")).Value;
+
                 SETTING_ShowSITStatistics = StayInTarkovPlugin.Instance.Config.Bind
                  ("Coop", "ShowSITStatistics", true, new ConfigDescription("Enable the SIT statistics on the top left of the screen which shows ping, player count, etc.")).Value;
+
+                ShowPing = StayInTarkovPlugin.Instance.Config.Bind
+                    ("Coop", "ShowPing", true, new ConfigDescription("Enables RTT display in the top left of the screen.")).Value;
+
+                SITWebSocketPort = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITPort", 6970, new ConfigDescription("SIT TCP/Websocket Port")).Value;
+                SITNatHelperPort = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITNatHelperPort", 6971, new ConfigDescription("SIT Nat Helper Port")).Value;
+                //SITServerType = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITServerType", ServerType.Relay, new ConfigDescription("SIT Server Type (when hosting a match). Possible values: Relay, P2P")).Value;
+
+                UdpServerLocalIPv4 = StayInTarkovPlugin.Instance.Config.Bind
+                  ("Coop", "UdpServerLocalIPv4", "0.0.0.0", new ConfigDescription("Peer-to-peer (UDP) only: IPv4 address to bind to when listening for connections")).Value;
+
+                UdpServerLocalIPv6 = StayInTarkovPlugin.Instance.Config.Bind
+                  ("Coop", "UdpServerLocalIPv6", "::", new ConfigDescription("Peer-to-peer (UDP) only: IPv6 address to bind to when listening for connections")).Value;
+
+                UdpServerLocalPort = StayInTarkovPlugin.Instance.Config.Bind
+                  ("Coop", "UdpServerLocalPort", 6972, new ConfigDescription("Peer-to-peer (UDP) only: Port to bind to when listening for connections")).Value;
+
+                UdpServerPublicIP = StayInTarkovPlugin.Instance.Config.Bind<string>
+                  ("Coop", "UdpServerPublicIP", "", new ConfigDescription("Peer-to-peer (UDP) only: IP address to advertise to peers when listening for connections")).Value;
+
+                UdpServerPublicPort = StayInTarkovPlugin.Instance.Config.Bind<int>
+                  ("Coop", "UdpServerPublicPort", 6972, new ConfigDescription("Peer-to-peer (UDP) only: Port to advertise to peers when listening for connections")).Value;
 
                 Logger.LogDebug($"SETTING_DEBUGSpawnDronesOnServer: {SETTING_DEBUGSpawnDronesOnServer}");
                 Logger.LogDebug($"SETTING_DEBUGShowPlayerList: {SETTING_DEBUGShowPlayerList}");
                 Logger.LogDebug($"SETTING_PlayerStateTickRateInMS: {SETTING_PlayerStateTickRateInMS}");
                 Logger.LogDebug($"SETTING_HeadshotsAlwaysKill: {SETTING_HeadshotsAlwaysKill}");
                 Logger.LogDebug($"SETTING_ShowFeed: {SETTING_ShowFeed}");
-                Logger.LogDebug($"SETTING_ShowFeed: {SETTING_ShowSITStatistics}");
+                Logger.LogDebug($"SETTING_ShowSITStatistics: {SETTING_ShowSITStatistics}");
+                Logger.LogDebug($"ShowPing: {ShowPing}");
                 Logger.LogDebug($"AllPlayersSpawnTogether: {AllPlayersSpawnTogether}");
                 Logger.LogDebug($"ArenaMode: {ArenaMode}");
                 Logger.LogDebug($"ForceHighPingMode: {ForceHighPingMode}");
-
-                SITHostProtocol = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITHostProtocol", HostProtocol.TCP, new ConfigDescription("SIT Host Protocol.")).Value;
-                SITWebSocketPort = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITPort", 6970, new ConfigDescription("SIT TCP/Websocket Port DEFAULT = 6970")).Value;
-                SITUDPPort = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITUDPPort", 6971, new ConfigDescription("SIT UDP Port DEFAULT = 6971")).Value;
-                SITUDPHostIPV4 = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITUDPHostIPV4", "127.0.0.1", new ConfigDescription("The IPv4 to use when hosting a UDP Coop Session")).Value;
-                SITUDPHostIPV6 = StayInTarkovPlugin.Instance.Config.Bind("Coop", "SITUDPHostIPV6", "2001:0db8:85a3:0000:0000:8a2e:0370:7334", new ConfigDescription("The IPv6 to use when hosting a UDP Coop Session")).Value;
-
                 Logger.LogDebug($"SITWebSocketPort: {SITWebSocketPort}");
+                Logger.LogDebug($"SITNatHelperPort: {SITNatHelperPort}");
+                Logger.LogDebug($"UdpServerLocalIPv4: {UdpServerLocalIPv4}");
+                Logger.LogDebug($"UdpServerLocalIPv6: {UdpServerLocalIPv6}");
+                Logger.LogDebug($"UdpServerLocalPort: {UdpServerLocalPort}");
+                Logger.LogDebug($"UdpServerPublicIP: {UdpServerPublicIP}");
+                Logger.LogDebug($"UdpServerPublicPort: {UdpServerPublicPort}");
 
                 if (ArenaMode)
                 {
@@ -181,14 +209,6 @@ namespace StayInTarkov.Configuration
                     EnableAISpawnWaveSystem = false;
                 }
             }
-
-            public enum HostProtocol
-            {
-                TCP,
-                UDP, 
-                //Both
-            }
         }
-
     }
 }
