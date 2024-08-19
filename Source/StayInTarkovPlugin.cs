@@ -77,12 +77,6 @@ namespace StayInTarkov
         public static bool LanguageDictionaryLoaded { get; private set; }
 
 
-        internal static string IllegalMessage { get; }
-            = LanguageDictionaryLoaded && LanguageDictionary.ContainsKey("ILLEGAL_MESSAGE")
-                ? LanguageDictionary["ILLEGAL_MESSAGE"].ToString()
-                : "Illegal game found. Please buy, install and launch the game once.";
-
-
         void Awake()
         {
             Instance = this;
@@ -108,6 +102,8 @@ namespace StayInTarkov
             ThirdPartyModPatches.Run(Config, this);
 
             Logger.LogInfo($"Stay in Tarkov is loaded!");
+
+            StayInTarkovHelperConstants.Logger.LogInfo("Thanks for playing the modified version by cocorico8");
         }
 
 
@@ -132,35 +128,6 @@ namespace StayInTarkov
         {
             //new AirdropPatch().Enable();
             new AirdropFlarePatch().Enable();
-        }
-
-        private bool shownCheckError = false;
-        private bool bsgThanksShown = false;
-
-        void Update()
-        {
-            if (!LegalGameCheck.Checked)
-                LegalGameCheck.LegalityCheck(Config);
-
-            if (Singleton<PreloaderUI>.Instantiated
-                && !shownCheckError
-                && LegalGameCheck.LegalGameFound[0] != 0x1
-                && LegalGameCheck.LegalGameFound[1] != 0x0
-               )
-            {
-                shownCheckError = true;
-                Singleton<PreloaderUI>.Instance.ShowCriticalErrorScreen("", StayInTarkovPlugin.IllegalMessage,
-                    ErrorScreen.EButtonType.QuitButton, 60, () => { Application.Quit(); },
-                    () => { Application.Quit(); });
-            }
-            else
-            {
-                if (!bsgThanksShown)
-                {
-                    bsgThanksShown = true;
-                    StayInTarkovHelperConstants.Logger.LogInfo("Official EFT Found. Thanks for supporting BSG.");
-                }
-            }
         }
 
         private void ReadInLanguageDictionary()

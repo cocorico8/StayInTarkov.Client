@@ -183,21 +183,6 @@ namespace StayInTarkov.Coop.Components.CoopGameComponents
 
             ActionPacketHandler = CoopPatches.CoopGameComponentParent.GetOrAddComponent<ActionPacketHandlerComponent>();
             gameObject.AddComponent<SITGameGUIComponent>();
-
-            SITCheck();
-        }
-
-        /// <summary>
-        /// Check the StayInTarkov assembly hasn't been messed with.
-        /// </summary>
-        void SITCheck()
-        {
-            // Check the StayInTarkov assembly hasn't been messed with.
-            SITCheckConfirmed[0] = StayInTarkovHelperConstants
-                .SITTypes
-                .Any(x => x.Name ==
-                Encoding.UTF8.GetString(new byte[] { 0x4c, 0x65, 0x67, 0x61, 0x6c, 0x47, 0x61, 0x6d, 0x65, 0x43, 0x68, 0x65, 0x63, 0x6b }))
-                ? (byte)0x1 : (byte)0x0;
         }
 
 
@@ -994,15 +979,7 @@ namespace StayInTarkov.Coop.Components.CoopGameComponents
                 instance.ServerTime = rttMs;
                 //instance.NetworkQuality.CreateMeasurers();
             }
-
-            if (Singleton<PreloaderUI>.Instantiated && SITCheckConfirmed[0] == 0 && SITCheckConfirmed[1] == 0)
-            {
-                SITCheckConfirmed[1] = 1;
-                Singleton<PreloaderUI>.Instance.ShowCriticalErrorScreen("", StayInTarkovPlugin.IllegalMessage, ErrorScreen.EButtonType.QuitButton, 60, () => { Application.Quit(); }, () => { Application.Quit(); });
-            }
         }
-
-        byte[] SITCheckConfirmed { get; } = new byte[2] { 0, 0 };
 
         #endregion
 
